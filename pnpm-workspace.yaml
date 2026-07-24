@@ -1,3 +1,8 @@
 packages:
-  - apps/*
+  - ui
   - packages/*
+  - extensions/*
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+minimumReleaseAge: 1440

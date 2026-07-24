@@ -1,0 +1,1 @@
+export const GATEWAY_PROTOCOL_VERSION = 1;
