@@ -54,7 +54,7 @@ OpenClaw currently demonstrates several useful principles:
 
 - Linux is the only implemented host platform;
 - browser execution is local to the Gateway host in V1;
-- one initial Browser Provider may wrap Playwright MCP or another external browser-control implementation;
+- V1 uses the Playwright library directly in the TypeScript/Node.js process to control Chromium;
 - remote nodes, remote browser routing, native Windows/macOS implementations, profile marketplaces, and distributed browser execution are deferred;
 - browser and platform capabilities remain subject to ADR 0008 Tool Runtime, policy, approval, and sandbox controls.
 
@@ -271,7 +271,15 @@ close the control session
 
 The exact TypeScript interfaces are implementation details until the first browser slice is planned.
 
-V1 may have one statically registered provider. A provider may wrap Playwright MCP, a local control service, or another implementation, but core contracts must not expose that backend as the architecture.
+V1 has one statically registered provider implemented with the Playwright library directly inside the TypeScript/Node.js process. It controls Chromium and remains behind the normalized Browser Provider contract.
+
+The V1 implementation is named conceptually:
+
+```text
+PlaywrightBrowserProvider
+```
+
+V1 does not use Playwright MCP, Rod, a Go browser sidecar, or a raw-CDP-first provider. Playwright's `CDPSession` may be used only as a narrowly scoped implementation escape hatch when a required Chromium capability is unavailable through the normal Playwright API. CDP-specific values and sessions remain private implementation details.
 
 Provider selection is separate from model-provider and Agent Harness selection.
 
@@ -417,7 +425,7 @@ browser tool request
 → result returned to Harness
 ```
 
-The Harness must not invoke Playwright, CDP, MCP browser methods, or Browser Provider implementations directly.
+The Harness must not invoke Playwright APIs, Playwright `CDPSession`, Chromium control methods, MCP browser methods, or Browser Provider implementations directly.
 
 The Gateway may expose browser status or operator-control methods in the future, but those methods call Browser Runtime contracts and do not become the owner of browser state.
 
@@ -532,7 +540,7 @@ Browser Runtime
 Forbidden dependencies include:
 
 ```text
-Gateway handlers → Playwright, CDP, or MCP implementation
+Gateway handlers → Playwright, Playwright CDPSession, Chromium, or MCP implementation
 Agent Runtime → LinuxPlatform
 Agent Runtime → Browser Provider implementation
 Harness → shell, platform, or browser implementation
@@ -564,7 +572,7 @@ Intentional V1 differences are:
 - no dynamic browser plugin replacement;
 - no multiple Browser Providers unless an active requirement appears;
 - no promise of OpenClaw-compatible browser tool schemas;
-- the initial provider may wrap Playwright MCP rather than reproducing OpenClaw's browser control service;
+- the initial provider uses the Playwright library directly with Chromium rather than Playwright MCP, Rod, or a separate browser-control service;
 - durable browser state and artifact retention are limited to the needs of implemented vertical slices.
 
 OpenClaw is used as a reference for lifecycle and boundary design, not as a required implementation dependency.
@@ -678,6 +686,14 @@ Rejected because browser lifecycle, pages, observations, references, and artifac
 
 Rejected because it would make the initial provider the permanent architecture and prevent backend replacement without changing callers.
 
+### Use Playwright MCP as the V1 Browser Provider
+
+Rejected because it adds a separate process and protocol boundary while weakening direct lifecycle ownership, cancellation propagation, typed browser identity, and per-operation Run Journal evidence. Playwright is used as an in-process library instead.
+
+### Use Rod or a Go browser sidecar in V1
+
+Rejected because the primary codebase is TypeScript/Node.js and a Go sidecar would add a second toolchain, RPC contract, process lifecycle, and cross-process debugging burden without an active isolation requirement.
+
 ### Use CSS selectors as the canonical element identity
 
 Rejected because selectors are provider- and document-dependent, can match unintended elements, and do not express observation generation or stale state.
@@ -706,7 +722,7 @@ This decision is correctly applied when:
 - bootstrap selects `LinuxPlatform` without making it a domain singleton;
 - core modules use Platform contracts rather than `systemctl`, `/proc`, `apt`, or platform branches;
 - model-initiated platform operations pass through Tool Runtime policy and approval;
-- browser tools call Browser Runtime contracts rather than Playwright, CDP, or MCP directly;
+- browser tools call Browser Runtime contracts rather than Playwright, Playwright `CDPSession`, Chromium, or MCP directly;
 - the initial Browser Provider can be replaced in tests without changing Agent Runtime or Gateway handlers;
 - browser profile, control session, tab, observation, and element-reference concepts remain distinct;
 - stale references and provider restarts produce normalized failures and require re-observation;

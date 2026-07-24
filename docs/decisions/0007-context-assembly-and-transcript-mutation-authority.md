@@ -46,7 +46,7 @@ OpenClaw currently distinguishes stored transcript history from the context asse
 - one built-in context assembler;
 - no plugin-provided context engine in V1;
 - no automatic compaction in the initial slice;
-- no cross-session memory or recall engine;
+- no automatic episodic extraction, vector recall, knowledge graph, or background memory consolidation;
 - no provider-specific durable transcript format;
 - no arbitrary transcript-mutating hooks.
 
@@ -60,9 +60,12 @@ The intended flow for each model call is:
 
 ```text
 load durable transcript snapshot
-→ resolve run and agent resources
-→ assemble provider-neutral model context
-→ apply in-memory pruning and context policy
+→ resolve run, agent resources, memory, tools, and attachments
+→ build a ContextManifest
+→ build the versioned PromptPlan
+→ enforce section and total budgets
+→ render an immutable provider-neutral PreparedModelContext
+→ validate the prepared context
 → apply provider request projection
 → execute model call
 → normalize model and tool-loop results
@@ -79,47 +82,57 @@ Conceptually:
 
 ```ts
 interface ContextAssembler {
-  assemble(input: ContextAssemblyInput): Promise<PreparedModelContext>;
+  prepare(input: ContextAssemblyInput): Promise<PreparedContextBundle>;
+}
+
+interface PreparedContextBundle {
+  readonly manifest: ContextManifest;
+  readonly promptPlan: PromptPlan;
+  readonly context: PreparedModelContext;
 }
 ```
 
-The exact TypeScript contract may evolve, but the boundary is fixed.
+The exact TypeScript shapes may evolve, but the three-artifact boundary and ownership are fixed.
 
 The assembler receives explicit, already-resolved inputs. It must not discover ownership from global mutable state or read Gateway transport objects.
 
 Inputs may include:
 
 ```text
-agentId and resolved agent definition
+agentId and immutable resolved agent snapshot
 sessionKey and sessionId
 runId and attemptId
 current model-call sequence
 resolved model route and context limits
-transcript snapshot
+transcript snapshot and structural groups
 current user input and attachments
 workspace and bootstrap resources
-skills snapshot
-available tool definitions
+skills and knowledge snapshot
+frozen MemoryRecallSnapshot
+visible tool definitions
 policy-derived instructions and notices
 runtime metadata
 origin and capability metadata
 context budget
 ```
 
-The assembler returns an immutable prepared snapshot for one model request. The snapshot may include:
+The assembler returns one immutable `PreparedContextBundle` for one model request.
+
+`ContextManifest` describes resolved sources and transformations. `PromptPlan` describes the exact ordered semantic sections and budgets selected for the call. `PreparedModelContext` contains the provider-neutral structured payload:
 
 ```text
-ordered provider-neutral messages
-system and developer instructions
+ordered system/developer sections
+conversation turns and structural tool exchanges
 available tool schemas
 current-turn attachments
-estimated token usage
+provider-continuation references
+estimated or exact token usage
 budget and truncation metadata
-resource provenance
+source and section provenance
 context preparation diagnostics
 ```
 
-The prepared snapshot must not contain mutable store handles or Gateway connection objects.
+The prepared bundle must not contain mutable store handles, Gateway connection objects, raw credentials, or authority inferred from prompt text.
 
 ## Explicit input resolution
 
@@ -142,20 +155,21 @@ Configuration-backed prompt options must be resolved for the current agent and p
 
 ## Context sources
 
-Context assembly may combine the following source classes:
+Context assembly resolves source classes from the immutable `ResolvedAgentSnapshot`, canonical stores, and validated run input. It may combine:
 
-1. host system rules and execution constraints;
-2. resolved agent identity and role instructions;
-3. workspace bootstrap resources;
-4. enabled skills and task-specific resources;
-5. policy and approval instructions;
-6. visible tool definitions and usage guidance;
-7. durable transcript projection;
-8. current user input and attachments;
-9. run, origin, platform, sandbox, and capability metadata;
-10. model-family or provider prompt contributions allowed by contract.
+1. host safety, policy, and execution constraints;
+2. agent operating rules;
+3. resolved agent identity;
+4. visible tool definitions and tool guidance;
+5. user-profile resources;
+6. bounded curated-memory recall selected by the Memory Runtime;
+7. bootstrap, skill, and task-specific knowledge resources;
+8. durable transcript projection;
+9. current user input and attachments;
+10. run, origin, platform, sandbox, and capability metadata;
+11. model-family or provider prompt contributions allowed by contract.
 
-The exact wording and section order are implementation details until they become externally relied upon. The following invariants are not implementation details:
+Exact wording and rendering details are implementation choices until externally relied upon. Resource-role precedence is explicit and versioned below. The following invariants are not implementation details:
 
 - user-authored content remains distinguishable from runtime-authored content;
 - resource provenance is retained internally;
@@ -164,6 +178,142 @@ The exact wording and section order are implementation details until they become
 - attachments are included only when valid for the current turn and model capability;
 - context sources are bounded by explicit size and token policies;
 - sensitive runtime details are not automatically exposed in history or diagnostics.
+
+## Agent resource model and precedence
+
+Agent resources are typed inputs to context assembly, not an unordered set of filenames.
+
+V1 recognizes these architecture-level roles:
+
+```ts
+type AgentResourceRole =
+  | "operating-rules"
+  | "personality-guidance"
+  | "identity"
+  | "user-profile"
+  | "capability-guidance"
+  | "tool-guidance"
+  | "bootstrap"
+  | "skill"
+  | "knowledge";
+
+type ResourceMutability =
+  | "host-managed"
+  | "user-managed"
+  | "agent-writable-with-approval"
+  | "generated";
+```
+
+A resource definition includes applicable resource ID, role, resolved path or loader identity, required flag, mutability, precedence, context-inclusion policy, size/token limit, and content hash.
+
+Filenames such as `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `CAPABILITIES.md`, `TOOLS.md`, `USER.md`, or `BOOTSTRAP.md` may be V1 conventions, but runtime meaning comes from the resource definition. Repository development instructions such as the root `AGENTS.md` are not automatically agent-runtime resources.
+
+`CAPABILITIES.md`-like content is capability guidance only. `TOOLS.md`-like content is local usage guidance only. Neither registers tools, grants permissions, changes Tool Registry membership, or overrides Policy Engine decisions. `MEMORY.md` is not the V1 memory source of truth; explicit import may create normal Memory Runtime entries.
+
+V1 context precedence is explicit and versioned:
+
+```text
+host safety and policy instructions
+→ agent operating rules
+→ agent identity and personality guidance
+→ tool and capability guidance
+→ user profile
+→ bounded memory recall
+→ task skills and knowledge resources
+→ transcript projection
+→ current user input
+```
+
+Provider continuation metadata is merged later by selected provider projection and does not participate as user-editable instruction text.
+
+`ContextManifest` records each included, skipped, rejected, or transformed source with resource ID, role, precedence, mutability, source/included hashes, included bytes/tokens, transformation rule, and reason.
+
+Required safety, operating-rules, and identity resources must not be silently truncated. If they cannot fit their declared budget, context preparation fails. Optional skills or knowledge may be truncated only through a deterministic versioned strategy with manifest and Run Journal evidence.
+
+Bootstrap resources are ordinary typed resources with separate lifecycle state. Completion, failure, archival, or replacement is explicit and versioned; V1 does not silently delete `BOOTSTRAP.md` after use.
+
+## Prompt Plan, profile, authority, and trust
+
+Context files and runtime sources are inputs. `PromptPlan` is the host-owned decision describing exactly what the model receives and how it is represented.
+
+V1 defines one explicit versioned profile:
+
+```text
+promptProfileId: main-v1
+```
+
+The profile is resolved from the immutable agent snapshot and run policy. It is not inferred from `sessionKey`, origin, provider, Harness, or token pressure. Additional task, delegate, cron, or minimal profiles are deferred.
+
+Conceptually, each semantic section contains:
+
+```ts
+interface PromptSectionPlan {
+  readonly sectionId: string;
+  readonly sourceRefs: readonly string[];
+  readonly authority:
+    | "host"
+    | "agent"
+    | "user-profile"
+    | "runtime"
+    | "retrieved-memory"
+    | "conversation";
+  readonly trust:
+    | "trusted-instruction"
+    | "managed-context"
+    | "untrusted-data";
+  readonly stability:
+    | "agent-revision"
+    | "run"
+    | "model-call";
+  readonly budgetClass:
+    | "protected"
+    | "bounded"
+    | "optional";
+  readonly required: boolean;
+  readonly rendererVersion: string;
+  readonly contentHash: string;
+}
+```
+
+The exact fields may evolve, but these invariants are fixed:
+
+1. `resourceId` and `sectionId` are distinct. One resource may render multiple sections; one section may compose multiple sources.
+2. Section order is deterministic for the same profile, agent revision, run snapshot, and model-call inputs.
+3. Prompt position does not create runtime authorization. Policy, Tool Registry, validated identities, and stores remain authoritative.
+4. Managed or retrieved context cannot override protected host safety, policy guidance, operating rules, or identity.
+5. Untrusted data such as labels, filenames, web content, attachment text, browser observations, and tool output is delimited, bounded, control-character normalized, and cannot create section IDs, reorder sections, or become tool schemas.
+6. A provider or Harness cannot silently create, remove, or reorder host-owned sections.
+7. Persona or identity reinforcement, if used, is derived from the same agent revision, bounded, and evidence-bearing; it cannot introduce new instructions.
+
+Prompt budgets apply by semantic section, not only by source file. The plan records model context limit, reserved output/conversation capacity, tool-definition cost, system-section budget, measurement quality, and per-section allocation.
+
+Protected sections include host safety/policy guidance, operating rules, identity, and required tool-contract guidance. They are never silently truncated. If they cannot fit, context preparation fails with a typed error such as `PROMPT_REQUIRED_SECTION_EXCEEDS_BUDGET`.
+
+Bounded and optional sections such as user profile, memory, skills, and knowledge may be omitted or deterministically truncated using versioned policies. Every transformation records original/included hashes, measured or estimated size, strategy ID, and reason.
+
+The plan classifies sections for future caching without requiring caching in V1:
+
+```text
+agent-revision stable
+run stable
+model-call dynamic
+```
+
+Provider-specific cache directives remain in provider projection. The generic Context Assembler exposes only semantic stability metadata.
+
+## Curated memory recall
+
+Cross-session memory is supplied by the independent Memory Runtime defined in ADR 0014. It is not an agent resource file and not transcript history.
+
+The agent snapshot freezes memory enablement, namespace, search-policy version, and recall budget. The Memory Runtime performs one normal bounded retrieval for the admitted run and returns a `MemoryRecallSnapshot` containing selected memory IDs, revisions, hashes, scores, and rendered content. Context assembly consumes that frozen snapshot for each model call in the run.
+
+A memory written during the active run does not silently change the current recall snapshot. It may be observed through the tool result and becomes eligible for later runs.
+
+The memory contribution is rendered as one or more typed `retrieved-memory` / `managed-context` Prompt Plan sections below authoritative host/agent instructions and above task transcript content. It cannot override safety, policy, operating rules, or identity. Empty retrieval produces no fabricated section. The full contents of a `MEMORY.md` file are never injected as a bypass around `MemoryRecallSnapshot`.
+
+The Context Manifest records memory index revision, retrieval-policy version, selected IDs and hashes, result/token budgets, and inclusion or rejection decisions. Unrestricted memory bodies are not duplicated into Run Journal rows.
+
+Agent-owned operating rules, identity, tool policy, sandbox policy, and model route are not writable through ordinary model output. A future approved management operation must create a new agent revision and cannot mutate the active run snapshot.
 
 ## Runtime context is not user transcript
 
@@ -224,13 +374,18 @@ tool result
 structured notice
 ```
 
-Future explicit entry classes may include:
+Provider-neutral transcript entries remain the canonical user- and host-facing history. A model exchange may also carry provider continuation sidecar metadata when the selected provider requires opaque data for later stateless replay.
+
+For Gemini V1, that sidecar may preserve typed interaction steps, thought signatures, provider interaction/request IDs, and their exact step associations. It is not user-visible assistant content and must not be flattened into plain text.
+
+Future explicit entry classes or sidecars may include:
 
 ```text
 compaction summary
 redaction marker
 repair marker
 branch or ancestry reference
+provider continuation metadata
 runtime continuation metadata
 ```
 
@@ -245,6 +400,76 @@ Every durable entry class must define:
 - which module is authorized to create it.
 
 Internal runtime events are not automatically transcript entries. Logs, events, audit records, and transcripts remain separate concepts.
+
+## Structural exchange groups and history selection
+
+Transcript entries are persisted individually but interpreted through provider-neutral structural groups.
+
+A structural group represents one coherent exchange, for example:
+
+```text
+user message
+→ assistant tool request
+→ tool result
+→ optional additional tool cycles
+→ final assistant message
+```
+
+A group has a stable `groupId`, an ordered entry range, and a structural status such as `complete` or `incomplete`.
+
+Context selection operates on complete groups and declared transcript entry classes. It must not select an arbitrary last-N entry slice that can separate a tool request from its result or detach provider continuation from the model exchange it belongs to.
+
+The context pipeline is:
+
+```text
+load bounded transcript range
+→ reconstruct structural groups
+→ reject invalid durable structure
+→ select recent complete groups
+→ apply in-memory pruning to eligible content
+→ validate provider-neutral structure
+→ create provider projection
+```
+
+A structurally invalid durable transcript fails with a normalized error such as `TRANSCRIPT_STRUCTURE_INVALID`. Normal context assembly does not invent missing entries, collapse tool cycles into plain text, or silently repair durable history.
+
+Pruning may reduce content inside an eligible group only when the resulting projection remains structurally valid and the transformation is recorded in the Context Manifest and Run Journal.
+
+## Atomic transcript append batches
+
+Agent Runtime writes canonical transcript changes through an atomic batch contract conceptually equivalent to:
+
+```ts
+TranscriptStore.appendBatch({
+  sessionId,
+  expectedTailSequence,
+  entries,
+});
+```
+
+The store either commits every entry in the batch with one contiguous sequence range or commits nothing. A stale `expectedTailSequence` fails explicitly rather than appending against an unexpected transcript head.
+
+V1 commit boundaries are:
+
+```text
+RunSetupStage:
+  accepted user input
+
+Completed tool cycle:
+  assistant tool request
+  normalized tool result
+  associated provider continuation sidecar
+
+FinalizeStage:
+  completed assistant result
+  associated final provider continuation sidecar
+```
+
+Tool execution lifecycle evidence is written independently to the Run Journal before and after the side effect. The canonical transcript tool request/result pair is committed atomically after a normalized result exists, preventing an orphaned half-pair in normal durable history.
+
+Provider continuation metadata required for replay commits in the same storage operation as the transcript exchange it describes. A successful transcript batch must not reference missing continuation data, and continuation data must not become current without its associated transcript entries.
+
+Retries within one run do not append the accepted user input again. Failed or cancelled attempts do not promote partial assistant output into a completed transcript batch.
 
 ## Run input and attempt behavior
 
@@ -279,7 +504,7 @@ Harness emits normalized tool request
 → next model context is assembled from the updated transcript snapshot
 ```
 
-Tool-call and tool-result entries must maintain valid pairing and ordering.
+Tool-call and tool-result entries must maintain valid pairing and ordering. The normalized pair and its required provider continuation are appended as one atomic transcript batch after execution; the Run Journal remains the evidence source for requested, started, uncertain, failed, or completed side effects before that batch commits.
 
 A tool implementation cannot append arbitrary assistant, user, or system messages to the transcript as a side effect of execution.
 
@@ -297,41 +522,105 @@ If a run fails or is cancelled after streaming partial output, the runtime must 
 
 ## Provider request projection
 
-Provider adapters may transform prepared model context to satisfy provider-specific requirements, including:
+Provider adapters receive the immutable structured `PreparedModelContext` and Prompt Plan identity. They transform it to satisfy provider-specific requirements, including:
 
-- role and message-shape conversion;
+- role, message, content-part, or typed-step conversion;
 - tool schema conversion;
-- tool-call identifier sanitization;
+- tool-call and function-result mapping;
 - provider ordering requirements;
-- removal of unsupported blank blocks;
+- omission of unsupported empty content blocks;
 - assistant-prefill handling;
 - media encoding or hydration;
-- cache-aware stable and dynamic prompt sections.
+- cache-aware stable and dynamic prompt sections;
+- inclusion of required provider continuation sidecars.
 
-These transformations are in-memory request projections by default.
+These transformations are request projections. They do not change canonical transcript meaning and do not grant the adapter authority to rebuild the Prompt Plan. The adapter preserves semantic section ordering, required-section inclusion, trust boundaries, and source-to-section evidence even when the provider uses different native fields.
 
-Provider adapters must not rewrite canonical transcript entries to make one provider accept them.
+For V1 Gemini Interactions API, projection combines:
 
-A malformed durable entry that violates the host transcript contract is not merely a provider adaptation problem. Repair of invalid durable records requires an explicit transcript-maintenance operation with validation and failure recovery.
+```text
+structured PreparedModelContext
++ normalized transcript exchanges
++ opaque Gemini continuation sidecars
+→ stateless Interactions API input
+```
+
+Projection must preserve complete Gemini typed steps and signatures required by later calls, with exact ordering and association.
+
+Provider adapters must not rewrite canonical transcript entries, collapse missing-signature cycles into user text, fabricate continuation, use remote interaction IDs as local history, expose signatures as reasoning, or silently omit protected Prompt Plan sections.
+
+Malformed durable transcript data fails as `TRANSCRIPT_STRUCTURE_INVALID`. Missing or incompatible continuation fails as `MODEL_HISTORY_INCOMPATIBLE`. Repair requires an explicit serialized transcript-maintenance operation with Run Journal evidence.
 
 ## Pruning
 
-Pruning reduces one outbound context snapshot without rewriting durable transcript history.
+V1 implements deterministic, non-destructive context pruning for tool-heavy model-request projections. Pruning changes one `PreparedModelContext`; it never rewrites canonical transcript entries, memory, agent resources, or provider-continuation sidecars.
 
-V1 may initially implement no pruning. When introduced, pruning must:
+The V1 reduction pipeline is:
 
-- operate on a copy or projection of transcript content;
-- retain entry ordering and required tool-call/result structure;
-- preserve current-turn input and attachments;
-- protect recent context according to a documented policy;
-- record metadata showing that the prepared context was pruned;
-- leave the canonical transcript unchanged.
+```text
+normalize bounded tool result and persist oversized payload as an artifact when required
+→ reconstruct complete structural exchange groups
+→ estimate request pressure including tools, attachments, and reserved output/thinking budget
+→ protect current and recent structural groups
+→ soft-trim eligible older tool/media/browser results
+→ obtain exact provider token count when the warning threshold requires it
+→ optionally apply policy-enabled artifact-backed hard clear
+→ validate structural integrity and final budget
+```
 
-Typical pruning candidates include older oversized tool results or already-processed media payloads.
+### Source-level output guard
 
-Pruning must not silently remove normal user or assistant conversation text from durable history.
+Tool Runtime and artifact infrastructure must prevent unbounded raw tool payloads from becoming ordinary inline transcript content. When a tool result exceeds its configured inline limit, the canonical normalized result contains a bounded representation plus an immutable artifact reference, content hash, size, and result type. The original payload is not silently discarded.
 
-Changing the pruning algorithm does not require a transcript migration because pruning is not persisted, unless the external context contract itself becomes compatibility-sensitive.
+Source-level guarding and request-time pruning are separate:
+
+```text
+source guard = bounded canonical inline representation plus durable artifact
+request pruning = smaller representation selected for one later model call
+```
+
+### Protected structure
+
+Pruning operates on complete structural exchange groups and must preserve:
+
+- current user input and current-turn attachments;
+- the active assistant function-call step, every corresponding function result, and required continuation;
+- the configured number of most recent complete exchange groups;
+- protected Prompt Plan sections and required tool definitions;
+- entry ordering and provider-required typed-step associations.
+
+V1 does not select history by an arbitrary message count and does not prune normal user or assistant conversation text merely to save cost. Malformed structure fails as `TRANSCRIPT_STRUCTURE_INVALID`.
+
+### Soft trim
+
+Soft trim is enabled for eligible older oversized tool results, processed media representations, and browser observations. The default strategy retains a bounded head and tail around an explicit placeholder containing the original type, byte/token measurements, content hash, artifact reference when present, and reduction-rule version.
+
+A soft-trim decision records before/after hashes and measurements. It must not claim that omitted content is absent from durable storage when an artifact exists.
+
+### Hard clear
+
+Hard clear is disabled by default in V1. A later configuration may enable it only for an eligible result that:
+
+- is outside the protected structural window;
+- has a durable artifact reference and content hash;
+- can be explicitly re-read through an authorized tool or artifact contract;
+- is not provider continuation, current-cycle state, or the sole evidence of an uncertain side effect.
+
+The replacement placeholder identifies the artifact and states that a new explicit read is required. Hard clear must not trigger an automatic repeated tool call.
+
+### Token measurement and failure
+
+The Context subsystem uses a versioned fast local estimator for ordinary calls. Near the configured warning threshold, it may use the selected model route's token-count capability to measure the fully projected candidate request. For Gemini this is `countTokens`; a tokenizer for another model family must not be reported as exact Gemini usage.
+
+Measurement is recorded as:
+
+```text
+estimated | exact | unknown
+```
+
+The execution plan defines bounded preflight behavior; V1 must not enter an unbounded count/prune loop. If the request still exceeds the usable budget after all permitted reductions, `ContextStage` returns `CONTEXT_BUDGET_EXCEEDED_AFTER_PRUNING`. It does not silently compact the transcript or ask the provider to repair history.
+
+Changing the pruning algorithm does not require a transcript migration because pruning is not persisted. A compatibility-sensitive external pruning contract or persisted reduction object requires a later decision.
 
 ## Compaction
 
@@ -377,7 +666,9 @@ Maintenance must:
 - use atomic storage behavior where supported;
 - report whether a rewrite occurred;
 - avoid altering delivered user or assistant content solely for provider preference;
-- produce validation evidence and, when appropriate, an audit or structured event.
+- produce validation evidence and, when appropriate, an audit or structured event;
+- preserve the original incompatible record or a verifiable backup before provider-specific repair;
+- journal every provider-history transformation, including which tool cycle or continuation field changed.
 
 Context hooks cannot obtain unrestricted transcript write access.
 
@@ -410,18 +701,34 @@ Selecting a context engine is separate from selecting a Harness or model provide
 
 ## Resource snapshots and reproducibility
 
-A run may capture a stable snapshot of agent resources such as skills, workspace bootstrap files, and model/tool capability metadata.
+Context assembly operates on the immutable `ResolvedAgentSnapshot` captured for the run. It records enough metadata to reproduce or explain a run without treating the assembled prompt as the canonical transcript.
 
-Within one model call, `PreparedModelContext` is immutable.
+Within one model call, `PreparedModelContext` is immutable. Across model calls in the same run, transcript and tool-loop state may advance, but the agent revision and resource snapshot remain fixed.
 
-If resources can change during a run, the owning contract must decide whether later model calls:
+Applicable metadata includes:
 
-- reuse the run snapshot; or
-- resolve a new version explicitly.
+```text
+agentId and agentRevision
+resource-manifest version and aggregate hash
+per-resource ID, role, mutability, precedence, and content hash
+source transcript range or entry IDs
+skill and knowledge versions or hashes
+tool registry fingerprint
+policy and sandbox fingerprints
+model-route snapshot
+context-builder and precedence-policy versions
+prompt profile ID/version and Prompt Plan hash
+section renderer, trust, authority, stability, and budget policy versions
+rendered system/conversation/tool/attachment hashes
+pruning, truncation, or compaction policy version
+provider projection version and provider-request hash
+```
 
-V1 should prefer a stable per-run resource snapshot for bootstrap files and skills, while including transcript and tool-loop changes on every model call.
+The Run Journal records hashes, decisions, and references. Development capture may store redacted `ContextManifest`, Prompt Plan, rendered-section, and provider-request artifacts when enabled.
 
-Context diagnostics may record resource identifiers, versions, hashes, or modification metadata. They must not log raw credentials or unrestricted prompt content.
+A file or resource change during an active run does not alter that run's manifest or prompt inputs. The next run resolves a new agent revision. Tests must cover this immutability explicitly.
+
+Context diagnostics must not log raw credentials or unrestricted prompt content.
 
 ## Failure behavior
 
@@ -435,6 +742,9 @@ Examples include:
 - malformed transcript structure;
 - unavailable required tool definition;
 - context-engine failure;
+- invalid Prompt Plan or section-order invariant;
+- protected prompt section exceeding budget;
+- untrusted-data sanitization or delimiter failure;
 - provider projection failure.
 
 Optional resources may be skipped only under an explicit policy that records the omission.
@@ -448,25 +758,30 @@ A context or provider-projection failure must not mutate durable transcript stat
 Context preparation emits structured metadata such as:
 
 ```text
-agentId
-sessionKey
-sessionId
-runId
-attemptId
-model-call sequence
-resolved model route
-context engine or assembler ID
-estimated input tokens
-transcript contribution size
-resource contribution sizes
-available tool count
-attachment count
+agentId and agentRevision
+resource-manifest hash and source decisions
+bootstrap state and resource hash
+sessionKey, sessionId, runId, attemptId, model-call sequence
+resolved model route and assembler ID
+prompt profile ID and version
+Context Manifest hash
+Prompt Plan hash
+section IDs and source refs
+section authority, trust, stability, and budget classes
+section include/skip/reject/truncate decisions
+renderer, sanitization, delimiter, and transformation rule versions
+rendered system, conversation, tool-definition, attachment, and continuation hashes
+estimated or exact input tokens and measurement quality
+transcript head/range and structural-group validation
+memory index, search policy, selected IDs/hashes/scores, and budget
 pruning or compaction status
+provider continuation count and validation
+provider projection or repair decision
 ```
 
-`context.prepared` indicates that a model-call snapshot was successfully assembled. It does not mean the provider accepted the request or the run completed.
+`context.prepared` means a model-call snapshot was successfully assembled. It does not mean the provider accepted the request or the run completed.
 
-Logs and events should avoid full prompt bodies by default. Debug prompt export, when added, must be explicit, privileged, bounded, and redacted.
+Context diagnostics must not log raw credentials or unrestricted prompt content. Development capture may persist redacted manifests, Prompt Plans, rendered sections, and provider requests as access-controlled debug artifacts; ordinary journal rows retain typed decisions, references, hashes, sizes, and rule versions.
 
 ## OpenClaw alignment and intentional differences
 
@@ -475,7 +790,9 @@ This decision aligns with current OpenClaw behavior in the following ways:
 - model context is assembled separately from durable session history;
 - context assembly occurs as part of each model-run lifecycle;
 - runtime-only prompt enrichment is not stored as user-authored transcript content;
-- pruning is an in-memory prompt transformation;
+- V1 pruning is a deterministic in-memory/request-projection transformation;
+- source-level output guarding stores oversized payloads as artifacts rather than silently losing them;
+- soft trim is enabled for eligible old tool-heavy content and hard clear is disabled by default;
 - compaction is a distinct durable lifecycle operation;
 - provider-specific transcript hygiene normally applies to outbound replay rather than delivered history;
 - prompt rendering receives explicit resolved inputs rather than relying on one monolithic global builder;
@@ -484,11 +801,13 @@ This decision aligns with current OpenClaw behavior in the following ways:
 `my-agent-v2` intentionally differs or starts smaller in these ways:
 
 - V1 uses one built-in `ContextAssembler`, not a selectable plugin context engine;
-- V1 has no automatic compaction, cross-session recall, memory engine, or transcript tree;
+- V1 has explicit curated-memory recall, but no automatic episodic extraction, embeddings, vector/hybrid recall, knowledge graph, background consolidation, or transcript tree;
 - transcript mutation authority remains explicitly coordinated by Agent Runtime and session contracts;
 - V1 does not persist complete prompt snapshots;
 - V1 does not permit hooks or providers to perform arbitrary transcript rewrites;
-- provider-neutral prepared context is kept as a first-class internal boundary.
+- provider-neutral prepared context is kept as a first-class internal boundary;
+- Gemini-specific continuation is stored as opaque sidecar metadata and is not exposed as normal transcript text;
+- V1 fails on incompatible Gemini history rather than silently collapsing tool-call cycles during projection.
 
 ## Consequences
 
@@ -524,6 +843,19 @@ Mitigation:
 - keep runtime instructions versioned or attributable internally;
 - do not describe normal history as a byte-for-byte model request log.
 
+### Resource precedence or mutation drift
+
+A file may be loaded under the wrong role, silently change precedence, or mutate while an active run is executing.
+
+Mitigation:
+
+- resolve typed resources from one agent snapshot;
+- version precedence policy;
+- hash every included resource;
+- fail required-resource overflow rather than silently truncating it;
+- journal all skip, rejection, and truncation decisions;
+- apply changes only through a new agent revision.
+
 ### Context growth
 
 Keeping the full durable transcript may make later requests expensive.
@@ -541,9 +873,11 @@ A provider adapter may be tempted to rewrite the transcript to satisfy replay ru
 
 Mitigation:
 
-- require provider projection to be in-memory;
-- validate canonical transcript structure independently;
-- reserve durable repair for explicit maintenance contracts.
+- require visible-content provider projection to be in-memory;
+- preserve required opaque continuation through explicit sidecar records rather than content rewrites;
+- validate canonical transcript structure and provider continuation independently;
+- reserve durable repair for explicit maintenance contracts;
+- fail rather than silently collapse incompatible tool history.
 
 ### Unauthorized transcript writes
 
@@ -568,6 +902,34 @@ Mitigation:
 - keep credential handles out of model context unless explicitly required.
 
 ## Rejected alternatives
+
+### Infer resource semantics only from filenames
+
+Rejected because identical filenames can exist in repository, workspace, skill, or generated scopes, while role, precedence, mutability, and authority must remain explicit.
+
+### Reload agent resources independently before every stage
+
+Rejected because one run could observe mixed revisions and become timing-dependent or unreproducible.
+
+### Silently truncate required identity or operating rules
+
+Rejected because the model would receive a materially different authority context without a visible failure or evidence record.
+
+### Treat context files as the final prompt contract
+
+Rejected because source files do not encode resolved precedence, trust, section mapping, runtime contributions, budgets, or provider-neutral turns.
+
+### Pass one monolithic system-prompt string through the runtime
+
+Rejected because semantic sections, conversation turns, tools, attachments, continuation, and untrusted data need distinct contracts and evidence.
+
+### Let prompt position define authorization
+
+Rejected because language-model instructions cannot replace Tool Registry, Policy Engine, validated identities, or store ownership.
+
+### Infer prompt profile from session key or run origin
+
+Rejected because the effective profile would become implicit, hard to reproduce, and easy to influence accidentally.
 
 ### Persist the complete model prompt as the transcript
 
@@ -605,22 +967,58 @@ Rejected because deltas may be partial, duplicated, revised, cancelled, or follo
 
 Rejected because context assembly is an application boundary, while storage and transcript mutation belong to store contracts and Agent Runtime orchestration.
 
+### Select history by a raw entry count
+
+Rejected because arbitrary entry slicing can split structural exchanges and produce invalid tool or provider history.
+
+### Commit tool requests and results as unrelated writes
+
+Rejected because partial failure could leave an orphaned tool call or result in canonical history.
+
+### Let callers assign transcript sequence numbers
+
+Rejected because multiple callers could create collisions, gaps, or stale ordering. Sequence allocation belongs to `TranscriptStore`.
+
 ## Validation
 
 This decision is correctly applied when:
 
 - `src/context/` exposes a provider-neutral context assembly contract;
+- every model call produces a `ContextManifest`, versioned Prompt Plan, and immutable structured `PreparedModelContext`;
+- V1 uses explicit `main-v1` and does not infer prompt mode from session, origin, provider, or Harness;
+- section order, source mapping, authority, trust, stability, budget class, renderer version, and hashes are deterministic and observable;
+- protected sections fail rather than truncate silently; optional transformations record versioned evidence;
+- untrusted data cannot create sections, schemas, policy rules, or capability grants;
+- resource IDs and section IDs remain distinct and traceable;
+- every model request is tied to one immutable `agentRevision` and resource manifest;
+- resource role, precedence, mutability, required status, and hashes are explicit;
+- repository development instructions are not implicitly loaded as runtime agent resources;
+- required operating-rules and identity resources fail visibly when over budget;
+- optional resource truncation is deterministic and journaled with before/after evidence;
+- bootstrap resource transitions are explicit and do not silently delete source content;
+- active runs do not observe later resource edits;
 - context is prepared for every model request that follows transcript or tool-loop changes;
 - prepared context is immutable for that model call;
 - runtime-only instructions are absent from normal user transcript entries;
 - user input is appended once per run;
 - Gateway handlers, Harnesses, providers, tools, and context hooks do not write directly to `TranscriptStore`;
 - Agent Runtime performs transcript writes through contracts while holding the session lane;
-- provider adapters transform request projections without rewriting canonical history;
-- pruning leaves durable transcript entries unchanged;
+- provider adapters transform request projections without rewriting canonical visible history;
+- required Gemini typed steps and continuation sidecars survive durable round trips with exact ordering and association;
+- raw thought signatures are not exposed through normal history APIs, logs, or Gateway events;
+- missing required Gemini continuation fails before the provider call or as a normalized incompatible-history error;
+- ordinary context assembly never silently collapses a tool cycle to repair provider history;
+- pruning leaves durable transcript entries unchanged and preserves complete protected structural groups;
+- oversized source tool results retain a bounded canonical representation plus artifact/hash evidence;
+- near-limit requests use model-route token counting under a bounded policy and record `estimated | exact | unknown`;
+- overflow after permitted pruning fails as `CONTEXT_BUDGET_EXCEEDED_AFTER_PRUNING`;
 - `run.completed` is emitted only after the final assistant outcome is durable;
 - streamed partial output is not represented as a completed assistant message after failure or cancellation;
 - tool-call and tool-result ordering and pairing are validated;
+- context selection uses complete structural groups rather than arbitrary entry counts;
+- structurally invalid history fails explicitly without silent repair;
+- transcript appends use atomic batches with expected-tail validation and contiguous store-assigned sequences;
+- tool request/result pairs and required provider continuation commit atomically;
 - context diagnostics expose metadata without logging full sensitive prompt content by default;
 - optional resource omission and mandatory resource failure follow explicit policies;
 - any future compaction implementation uses an explicit durable contract and session serialization;
@@ -639,42 +1037,81 @@ Minimum automated validation should include:
 9. final assistant persistence failure prevents `run.completed`;
 10. direct transcript mutation is unavailable from Harness and tool contracts;
 11. malformed tool-call/result ordering is rejected or routed to explicit repair;
-12. context diagnostics omit configured secrets and full prompt bodies by default.
+12. context diagnostics omit configured secrets, raw thought signatures, and full prompt bodies by default;
+13. a Gemini tool-loop fixture round-trips opaque continuation through persistence and produces an equivalent next request;
+14. missing required continuation returns `MODEL_HISTORY_INCOMPATIBLE` without mutating transcript content;
+15. an explicit repair fixture creates journaled maintenance evidence rather than an invisible projection rewrite;
+16. selecting recent history never returns an orphaned tool call or tool result;
+17. a failed transcript batch commits no entries and does not advance the tail sequence;
+18. a stale expected-tail write fails without corrupting a concurrently advanced transcript;
+19. tool request, result, and required provider continuation survive or fail as one durable batch;
+20. the same resolved inputs produce the same Prompt Plan order and hashes;
+21. protected sections fail rather than truncate when over budget;
+22. optional sections truncate or skip according to versioned strategy with evidence;
+23. untrusted filenames, web content, and tool output cannot create sections or tool schemas;
+24. provider projection preserves required section semantics and records a request hash;
+25. resource-to-section and section-to-source mappings remain queryable;
+26. source-level output guarding retains a bounded canonical result and durable artifact/hash for an oversized tool payload;
+27. soft trim preserves configured head/tail content, structural pairing, hashes, and artifact reference without changing stored history;
+28. hard clear is disabled by default and rejects a result without a durable re-readable artifact;
+29. near-limit Gemini context uses bounded route-aware token counting and never reports a foreign tokenizer estimate as exact;
+30. post-pruning overflow fails with `CONTEXT_BUDGET_EXCEEDED_AFTER_PRUNING` and does not invoke compaction implicitly.
 
 ## Revisit conditions
 
 Revisit this decision when:
 
 - a plugin-provided context engine becomes an active requirement;
-- cross-session memory or recall contributes to normal model context;
+- memory recall needs dynamic per-model-call refresh rather than the V1 frozen per-run snapshot;
+- automatic extraction, vector/hybrid search, or background consolidation contributes to normal model context;
 - automatic or manual compaction is implemented;
 - transcript branching or successor transcripts are introduced;
 - a native Harness owns canonical thread history that cannot be represented as a host transcript projection;
 - persisted partial assistant output becomes a product requirement;
 - prompt snapshots must be retained for compliance or reproducibility;
+- additional prompt profiles, automatic profile selection, or delegate/task modes become product requirements;
+- explicit provider cache objects, host-managed cache identities, or stronger stable-prefix compatibility guarantees become active;
+- section trust or authority rules need a public compatibility contract;
 - users need editable or retractable historical messages;
 - multiple processes can mutate one transcript;
 - provider requirements cannot be satisfied through in-memory projection;
+- agent resources become dynamically editable, remotely managed, or self-modifying;
+- precedence rules or resource-role contracts must become public and version-compatible;
+- bootstrap becomes resumable, interactive, or model-generated;
 - context assembly must become independently versioned or exposed through a plugin SDK.
 
 ## References
 
-- `docs/ARCHITECTURE.md`, section 9.5, **Context assembly**
+- `docs/decisions/0014-memory-ownership-retrieval-and-evolution.md`
+- `docs/ARCHITECTURE.md`, section 9.5, **Context assembly and Prompt Plan**
 - `docs/ARCHITECTURE.md`, section 9.6, **Compaction and runtime hooks**
 - `docs/ARCHITECTURE.md`, section 9.7, **Runtime events**
 - `docs/ARCHITECTURE.md`, section 10, **Model runtime and providers**
 - `docs/ARCHITECTURE.md`, section 11, **Sessions and transcripts**
-- `docs/ARCHITECTURE.md`, section 12, **Tool Runtime**
-- `docs/ARCHITECTURE.md`, section 20, **Events, logs, and audit**
-- `docs/ARCHITECTURE.md`, section 21, **Lifecycle and composition**
+- `docs/ARCHITECTURE.md`, section 13, **Tool Runtime**
+- `docs/ARCHITECTURE.md`, section 21, **Events, logs, and audit**
+- `docs/ARCHITECTURE.md`, section 22, **Lifecycle and composition**
 - `docs/decisions/0003-session-routing-transcript-separation-and-reset-semantics.md`
 - `docs/decisions/0005-agent-runtime-harness-and-model-provider-boundaries.md`
 - `docs/decisions/0006-run-attempt-lifecycle-and-per-session-serialization.md`
 - OpenClaw, **Context engine**: `https://docs.openclaw.ai/concepts/context-engine`
 - OpenClaw, **Context**: `https://docs.openclaw.ai/concepts/context`
 - OpenClaw, **System prompt**: `https://docs.openclaw.ai/concepts/system-prompt`
+- GoClaw, **System Prompt Anatomy**: `https://docs.goclaw.sh/system-prompt-anatomy`
+- GoClaw, **Context Files**: `https://docs.goclaw.sh/context-files`
+- GoClaw source, **System Prompt Anatomy**: `https://github.com/nextlevelbuilder/goclaw-docs/blob/master/agents/system-prompt-anatomy.md`
+- GoClaw source, **Context Files**: `https://github.com/nextlevelbuilder/goclaw-docs/blob/master/agents/context-files.md`
+- GoClaw, **Context Pruning**: `https://docs.goclaw.sh/context-pruning`
+- GoClaw source, **Context Pruning**: `https://github.com/nextlevelbuilder/goclaw-docs/blob/master/advanced/context-pruning.md`
 - OpenClaw, **Session pruning**: `https://docs.openclaw.ai/concepts/session-pruning`
 - OpenClaw, **Compaction**: `https://docs.openclaw.ai/concepts/compaction`
 - OpenClaw, **Transcript hygiene**: `https://docs.openclaw.ai/reference/transcript-hygiene`
 - OpenClaw, **Agent loop**: `https://docs.openclaw.ai/concepts/agent-loop`
 - OpenClaw, **Agent runtime architecture**: `https://docs.openclaw.ai/agent-runtime-architecture`
+- Gemini Interactions API: `https://ai.google.dev/gemini-api/docs/interactions-overview`
+- Gemini token counting and usage: `https://ai.google.dev/gemini-api/docs/tokens`
+- Gemini thought signatures: `https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures`
+- GoClaw Gemini provider reference: `https://docs.goclaw.sh/provider-gemini`
+- GoClaw, **How GoClaw Works**: `https://docs.goclaw.sh/how-goclaw-works`
+- GoClaw, **Agents Explained**: `https://docs.goclaw.sh/agents-explained`
+- GoClaw, **Sessions and History**: `https://docs.goclaw.sh/sessions-and-history`

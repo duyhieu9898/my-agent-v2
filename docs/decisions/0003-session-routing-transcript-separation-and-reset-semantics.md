@@ -53,19 +53,21 @@ The sessions subsystem owns this relationship through `SessionResolver`, `Sessio
 
 ### Routing input
 
-Callers provide structured routing input rather than constructing persistence records directly.
+Callers provide a typed `SessionRoute` rather than constructing a persistence key or record directly.
 
-Routing input may include:
+A V1 route contract is conceptually:
 
-```text
-agentId
-origin or client kind
-conversation or peer identifier
-explicit supported route selector
-future account, channel, room, or workspace metadata
+```ts
+interface SessionRoute {
+  agentId: string;
+  surface: "main" | "web" | "cli";
+  conversationId?: string;
+}
 ```
 
-The exact routing fields may expand as channels and multi-agent routing are introduced. Expansion must preserve the identity semantics defined by ADR 0002.
+The route may later gain validated account, channel, room, thread, workspace, or peer fields. Those additions must remain structured inputs and preserve the identity semantics defined by ADR 0002.
+
+`runId`, `attemptId`, `connectionId`, and `sessionId` are not route components. Clients do not serialize `SessionRoute` into a canonical key themselves.
 
 ### Canonicalization authority
 
@@ -144,11 +146,44 @@ V1 transcripts are logically ordered and append-oriented. Entries may include:
 
 Callers must address transcript operations with `sessionId`, not only `sessionKey`.
 
-Transcript ordering must be defined by the store contract and must not depend on wall-clock timestamps alone.
+Each transcript entry has an opaque `entryId` and a monotonic `sequence` scoped to one `sessionId`.
+
+`TranscriptStore` allocates sequence values. Callers do not provide authoritative sequence numbers. Sequence values are strictly increasing, never reused, and provide the canonical history order; timestamps are descriptive metadata only.
+
+Atomic append batches allocate a contiguous sequence range so structurally related entries cannot become partially committed. The storage and mutation details are governed by ADR 0007 and ADR 0009.
 
 Existing transcript entries are not rewritten as part of a normal reset. Future correction, redaction, branching, compaction, or archival behavior requires explicit contracts and may add new entry types or transcript relationships.
 
 V1 does not require OpenClaw's tree-structured transcript model. Linear ordered history is sufficient until branching, fork, restore, or compaction-successor behavior has an active product requirement.
+
+### Transcript sequencing and cursor semantics
+
+History reads use transcript sequence, not timestamps or array offsets.
+
+A bounded response is conceptually:
+
+```ts
+interface HistoryPage {
+  sessionId: string;
+  entries: TranscriptEntry[];
+  headSequence: number;
+  nextCursor?: string;
+}
+```
+
+History cursors are opaque application tokens bound to at least:
+
+```text
+sessionId
+sequence position or bounded range
+cursor schema version
+```
+
+A cursor is not an authorization token and does not replace capability checks.
+
+A cursor created for one `sessionId` is invalid after the same `sessionKey` is reset to a new transcript. The history API returns an explicit cursor/session mismatch or refresh-required result rather than silently applying the old cursor to the new transcript.
+
+Cursor encoding is an application contract. Database row offsets, SQLite row IDs, and implementation-specific pagination tokens are not stable public semantics.
 
 ## Session resolution contract
 
@@ -234,11 +269,18 @@ Forking, branching, and creating a child session from existing history are defer
 
 ## History access
 
-Session-list and transcript-history APIs must use application contracts rather than exposing store internals.
+Session-list and transcript-history APIs use application contracts rather than exposing store internals.
 
-History surfaces should support bounded reads such as pagination, cursors, or tail limits before transcript size becomes unbounded.
+V1 history reads are bounded and cursor-based. Tail reads may be offered as a convenience, but the durable contract is based on `(sessionId, sequence)` and an opaque cursor rather than offset pagination.
 
-External history responses must not automatically expose every internal transcript field. Filtering, internal scaffolding removal, credential-like content handling, and capability checks may be added at the application boundary.
+A response identifies the `sessionId` and current `headSequence` so clients can distinguish:
+
+- new transcript entries;
+- an unchanged transcript;
+- a cursor that is no longer valid;
+- a logical-session reset that produced a new transcript identity.
+
+External history responses do not automatically expose every internal transcript field. Provider continuation sidecars, internal scaffolding, credential-like content, and maintenance metadata require filtering and capability checks at the application boundary.
 
 The durable transcript is the source of conversation history. Gateway event delivery is not a replacement for transcript persistence.
 
@@ -274,6 +316,16 @@ This decision aligns with current OpenClaw behavior in the following ways:
 - automatic idle, daily, channel-specific, cron, webhook, and incognito session policies are deferred;
 - transcript branching, forks, restore checkpoints, and compaction-successor rotation are deferred;
 - SQLite is an implementation behind store contracts rather than part of the session-domain API.
+
+## Additional consistency invariants
+
+The following invariants also apply:
+
+1. Transcript sequence is monotonic and unique within one `sessionId`.
+2. An atomic append batch either commits its full contiguous sequence range or commits nothing.
+3. History cursors are bound to one `sessionId` and cannot cross reset boundaries.
+4. History readers never infer authoritative order from timestamps.
+5. A normal reset does not delete prior transcript entries or reuse their sequence space.
 
 ## Consequences
 
@@ -365,6 +417,18 @@ Rejected because V1 has no active fork, restore, or parallel-history requirement
 
 Rejected because the run could append to a transcript that is no longer current, producing confusing results and inconsistent history.
 
+### Order history by timestamp
+
+Rejected because timestamps can collide, arrive out of order, or change representation and therefore cannot provide a durable transcript order.
+
+### Expose database offsets as cursors
+
+Rejected because offsets and row IDs leak storage implementation and become invalid under migrations, filtering, or transcript replacement.
+
+### Reuse a history cursor after reset
+
+Rejected because reset creates a new `sessionId`; silently applying an old cursor would mix two transcript lifecycles.
+
 ## Validation
 
 This decision is correctly applied when:
@@ -373,6 +437,10 @@ This decision is correctly applied when:
 - `SessionStore` and `TranscriptStore` remain separate contracts;
 - session entries explicitly store `agentId`, `sessionKey`, and current `sessionId`;
 - transcript reads and appends are scoped by `sessionId`;
+- every transcript entry has a store-assigned monotonic sequence unique within its `sessionId`;
+- atomic append batches commit contiguous sequence ranges or no entries;
+- history APIs use opaque cursors bound to `sessionId` and sequence position;
+- a cursor from a previous transcript is rejected or requires refresh after reset;
 - concurrent resolution of one new key produces one current mapping;
 - reset preserves `sessionKey`, creates a new `sessionId`, and retains the prior transcript;
 - failed reset leaves the prior mapping current;
@@ -389,6 +457,8 @@ This decision is correctly applied when:
 Revisit this decision when:
 
 - transcript branching, fork, merge, or restore becomes a product requirement;
+- cursor compatibility must be published outside the local client set;
+- history requires snapshot isolation across multiple concurrent writers or processes;
 - compaction rotates the active transcript to a successor;
 - session keys need aliases, renaming, or many-to-one routing;
 - one logical session needs multiple simultaneously current transcript branches;
@@ -412,3 +482,4 @@ Revisit this decision when:
 - OpenClaw Session management deep dive: `https://docs.openclaw.ai/reference/session-management-compaction`
 - OpenClaw Security: `https://docs.openclaw.ai/gateway/security`
 - OpenClaw TUI session lifecycle: `https://docs.openclaw.ai/web/tui`
+- GoClaw, **Sessions and History**: `https://docs.goclaw.sh/sessions-and-history`

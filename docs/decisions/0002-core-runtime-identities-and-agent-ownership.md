@@ -47,15 +47,18 @@ An agent definition conceptually owns or selects:
 
 ```text
 identity and display metadata
+agent-definition revision
 workspace
 agent state directory
 credential references
 session namespace
+memory namespace and recall policy
 model defaults
 harness defaults and selection policy
 tool policy
 sandbox policy
-skills and bootstrap resources
+versioned resource definitions
+availability and bootstrap state
 ```
 
 V1 defines one agent:
@@ -70,7 +73,40 @@ Application and domain contracts must either carry an `agentId` explicitly or re
 
 Concrete agent definitions and registries are composed by `src/bootstrap/`. Bootstrap may configure the default agent, but runtime modules remain responsible for operating on the explicit resolved identity they receive.
 
-Future agents and delegates must have distinct ownership boundaries for workspace, state, credentials, sessions, policy, sandbox configuration, and runtime defaults. A delegate acts under its own `agentId` and authority rather than impersonating another agent.
+Future agents and delegates must have distinct ownership boundaries for workspace, state, credentials, sessions, memory, policy, sandbox configuration, and runtime defaults. A delegate acts under its own `agentId` and authority rather than impersonating another agent.
+
+### Agent revision and lifecycle state
+
+`agentId` is stable identity. It is not the version of the configuration used by a run.
+
+Every resolved agent definition has an immutable `agentRevision` or equivalent content fingerprint covering the authoritative configuration that can affect execution, including applicable:
+
+```text
+identity and operating resources
+workspace and state-location configuration
+model and harness defaults
+registered tool view
+policy and sandbox configuration
+memory enablement and retrieval-policy configuration
+bootstrap state relevant to the run
+```
+
+A run captures one `ResolvedAgentSnapshot` containing `agentId`, `agentRevision`, resource hashes, effective model/harness selection inputs, and policy/tool fingerprints. An active run does not observe an in-place mutation of that snapshot. Changes publish a new revision for later runs.
+
+`agentRevision` is version evidence, not a seventh durable identity and not a replacement for `runId`.
+
+Agent availability and bootstrap progress are separate state machines:
+
+```text
+AgentAvailability = ready | disabled | unavailable
+AgentBootstrapState = pending | running | completed | failed
+```
+
+Availability answers whether new runs may be admitted. Bootstrap state records onboarding or first-run preparation. A ready agent may still have pending bootstrap work when product policy allows it; an unavailable agent cannot accept a new run.
+
+When a caller omits `agentId`, V1 may resolve the configured default `primary`. When a caller explicitly supplies an unknown or unavailable agent, resolution fails with a typed error such as `AGENT_NOT_FOUND` or `AGENT_UNAVAILABLE`; it must not silently fall back to `primary`.
+
+Agent-owned identity, rules, model route, tool policy, and sandbox policy are host-managed in V1. They cannot silently self-modify during ordinary agent execution. A future management capability must use an explicit tool or application command, policy evaluation, approval where required, atomic update, a new revision, and Run Journal evidence.
 
 ### `sessionKey`
 
@@ -181,15 +217,17 @@ Reconnect creates a new `connectionId`. Durable state is recovered through expli
 
 The following invariants apply:
 
-1. A configured agent is identified by one `agentId`.
-2. A session entry belongs to exactly one `agentId`.
-3. A `sessionKey` identifies a logical route, while a `sessionId` identifies one transcript instance.
-4. A `sessionKey` resolves to one current `sessionId` at a time unless a later ADR explicitly introduces a different model.
-5. A run belongs to exactly one `agentId`, one `sessionKey`, and the `sessionId` resolved at acceptance.
-6. An attempt belongs to exactly one `runId`.
-7. A connection may initiate or observe multiple runs and sessions, but does not own their durable identity.
-8. Closing or replacing a connection does not by itself delete, replace, complete, or re-identify a session or run.
-9. Multi-agent support must extend these relationships rather than introduce a separate identity model.
+1. A configured agent is identified by one `agentId`; each resolved configuration has a distinct `agentRevision` or fingerprint.
+2. A run uses one immutable `ResolvedAgentSnapshot` for its lifetime.
+3. Agent availability and bootstrap state are explicit and are not inferred from identifier presence.
+4. A session entry belongs to exactly one `agentId`.
+5. A `sessionKey` identifies a logical route, while a `sessionId` identifies one transcript instance.
+6. A `sessionKey` resolves to one current `sessionId` at a time unless a later ADR explicitly introduces a different model.
+7. A run belongs to exactly one `agentId`, one captured `agentRevision`, one `sessionKey`, and the `sessionId` resolved at acceptance.
+8. An attempt belongs to exactly one `runId`.
+9. A connection may initiate or observe multiple runs and sessions, but does not own their durable identity.
+10. Closing or replacing a connection does not by itself delete, replace, complete, or re-identify a session or run.
+11. Multi-agent support must extend these relationships rather than introduce a separate identity model.
 
 ### Authority for creating and resolving identities
 
@@ -228,7 +266,8 @@ They must not be treated as aliases for any core identity defined here.
 
 This decision aligns with the current OpenClaw architecture in the following ways:
 
-- each configured `agentId` owns an isolated workspace, state directory, credentials or auth profiles, and session store;
+- each configured `agentId` owns an isolated workspace, state directory, credentials or auth profiles, session and memory namespaces, and agent resources;
+- agent behavior is resolved from configured model, tools, context resources, and lifecycle state rather than from the ID alone;
 - session routing uses a stable session key while reset starts a new `sessionId`;
 - an accepted agent command exposes a `runId` after resolving `sessionKey` and `sessionId`;
 - runs are serialized through a per-session lane;
@@ -252,6 +291,8 @@ This decision aligns with the current OpenClaw architecture in the following way
 - Multiple attempts, providers, and harness recovery can be introduced without redefining `runId`.
 - Multi-agent routing and delegates can be added without replacing singleton-based assumptions throughout the codebase.
 - Ownership and creation authority are explicit, reducing accidental cross-module coupling.
+- Run evidence can identify the exact agent revision and resource set that produced a result.
+- Configuration changes cannot create mixed-state behavior inside an active run.
 
 ### Negative
 
@@ -259,6 +300,7 @@ This decision aligns with the current OpenClaw architecture in the following way
 - V1 code carries concepts such as `attemptId` and explicit `agentId` even when only one value exists.
 - Mapping logical routes to transcript instances adds indirection compared with storing all history under one conversation identifier.
 - Logs and diagnostics must present enough context to make the distinct identifiers understandable.
+- Agent revisions, resource fingerprints, availability, and bootstrap state add lifecycle and validation work even in single-agent V1.
 
 ## Risks and trade-offs
 
@@ -303,6 +345,18 @@ Mitigation:
 - do not infer state from identifier presence;
 - define lifecycle transitions in later focused ADRs.
 
+### Silent agent mutation
+
+A tool or model output could otherwise change identity, instructions, policy, or model defaults while a run is active, making the result impossible to reproduce.
+
+Mitigation:
+
+- resolve one immutable agent snapshot per run;
+- classify resource mutability explicitly;
+- require a host-owned management path for changes;
+- publish a new revision atomically;
+- journal the old revision, new revision, actor, policy decision, and changed resource hashes.
+
 ## Rejected alternatives
 
 ### Use one conversation ID for `sessionKey` and `sessionId`
@@ -329,12 +383,25 @@ Rejected because duplicate creation authority would make correlation unreliable 
 
 Rejected because the current architectural requirement is semantic separation and ownership. Selecting UUID, ULID, database sequences, or sortable encodings is an implementation decision until external compatibility, ordering, or distributed generation requirements make it material.
 
+### Let the agent silently rewrite its own definition
+
+Rejected because in-place self-evolution would make active-run behavior depend on mutable hidden state, weaken policy authority, and make verification or bug reproduction unreliable.
+
+### Fall back to `primary` for an explicitly invalid agent ID
+
+Rejected because a caller error or stale route must be observable rather than silently redirected to a different identity and authority boundary.
+
 ## Validation
 
 This decision is correctly applied when:
 
 - contracts do not use one core identity as a substitute for another;
 - agent-facing operations carry or receive an explicitly resolved `agentId`;
+- each admitted run records one immutable `agentRevision` and `ResolvedAgentSnapshot` fingerprint;
+- changing agent configuration creates a new revision used only by later runs;
+- availability and bootstrap state are represented separately and tested;
+- an omitted agent may resolve to `primary`, while an explicitly invalid agent fails without fallback;
+- host-managed resources and policies cannot be silently rewritten by ordinary model/tool execution;
 - `primary` is configured at composition boundaries rather than imported as mutable global runtime state;
 - session entries explicitly associate `sessionKey`, `sessionId`, and `agentId`;
 - session-key canonicalization remains inside `SessionResolver` or the routing boundary;
@@ -351,6 +418,9 @@ This decision is correctly applied when:
 Revisit this decision when:
 
 - agent identity must be renamed, aliased, deleted, or migrated;
+- revision compatibility, rollback, or long-lived snapshot migration requires a public contract;
+- agents gain approved self-modification or user-editable runtime resources;
+- bootstrap becomes a multi-step resumable workflow or blocks all normal runs;
 - a `sessionKey` must resolve to multiple active transcript branches;
 - sessions may transfer ownership between agents;
 - runs may span multiple sessions or agents;
@@ -366,9 +436,9 @@ Revisit this decision when:
 - `docs/ARCHITECTURE.md`, section 8, **Agent definition and ownership**
 - `docs/ARCHITECTURE.md`, section 9, **Agent Runtime architecture**
 - `docs/ARCHITECTURE.md`, section 11, **Sessions and transcripts**
-- `docs/ARCHITECTURE.md`, section 18, **Multi-agent routing and delegates**
-- `docs/ARCHITECTURE.md`, section 21, **Lifecycle and composition**
-- `docs/ARCHITECTURE.md`, section 22, **Dependency direction**
+- `docs/ARCHITECTURE.md`, section 19, **Multi-agent routing and delegates**
+- `docs/ARCHITECTURE.md`, section 22, **Lifecycle and composition**
+- `docs/ARCHITECTURE.md`, section 23, **Dependency direction**
 - `docs/decisions/0001-modular-monolith-and-openclaw-alignment.md`
 - OpenClaw Gateway architecture: `https://docs.openclaw.ai/concepts/architecture`
 - OpenClaw Agent runtime architecture: `https://docs.openclaw.ai/agent-runtime-architecture`
@@ -376,3 +446,4 @@ Revisit this decision when:
 - OpenClaw Session management: `https://docs.openclaw.ai/concepts/session`
 - OpenClaw Multi-agent routing: `https://docs.openclaw.ai/concepts/multi-agent`
 - OpenClaw Delegate architecture: `https://docs.openclaw.ai/concepts/delegate-architecture`
+- GoClaw, **Agents Explained**: `https://docs.goclaw.sh/agents-explained`

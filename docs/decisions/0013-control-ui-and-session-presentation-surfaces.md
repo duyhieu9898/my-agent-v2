@@ -15,6 +15,7 @@
   - `docs/decisions/0009-storage-ownership-sqlite-and-migration-policy.md`
   - `docs/decisions/0010-runtime-events-logs-transcripts-and-audit-separation.md`
   - `docs/decisions/0012-plugin-registration-and-public-extension-boundary.md`
+  - `docs/decisions/0015-usage-accounting-and-cumulative-budget-enforcement.md`
 
 ## Context
 
@@ -158,6 +159,8 @@ interface SessionPresentationService {
   deleteForSession(sessionKey: string): Promise<void>;
 }
 ```
+
+The Control UI may expose authorized usage/cap summaries, active or uncertain reservations, and configuration warnings through typed Gateway application methods. It must not read usage tables directly, derive authoritative cumulative totals in the browser, or treat provider-console billing as the local Usage Ledger.
 
 The exact interface and module placement may be defined when the first dashboard slice is planned. The architectural requirements are:
 
@@ -752,6 +755,7 @@ This decision is correctly applied when:
 - widget prompt submission is visible, same-session, idempotent, and serialized like ordinary session input;
 - plugins contribute presentation capability only through published contracts;
 - tests cover reset survival, session deletion cleanup, stale revision conflicts, reconnect refresh, sandbox isolation, and capability denial before a dashboard feature is declared complete.
+- any usage/cap surface reads typed Gateway/application projections and never SQLite or Run Journal aggregates directly.
 
 ## Revisit conditions
 
@@ -770,6 +774,7 @@ Revisit this decision when:
 
 ## References
 
+- `docs/decisions/0015-usage-accounting-and-cumulative-budget-enforcement.md`
 - `docs/ARCHITECTURE.md`, section 6, **Core identities**
 - `docs/ARCHITECTURE.md`, section 7, **Gateway architecture**
 - `docs/ARCHITECTURE.md`, section 11, **Sessions and transcripts**

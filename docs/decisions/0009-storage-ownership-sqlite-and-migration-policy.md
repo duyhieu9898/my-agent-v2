@@ -13,10 +13,12 @@
   - `docs/decisions/0006-run-attempt-lifecycle-and-per-session-serialization.md`
   - `docs/decisions/0007-context-assembly-and-transcript-mutation-authority.md`
   - `docs/decisions/0008-tool-runtime-policy-approval-and-sandbox-boundaries.md`
+  - `docs/decisions/0010-runtime-events-logs-transcripts-and-audit-separation.md`
+  - `docs/decisions/0015-usage-accounting-and-cumulative-budget-enforcement.md`
 
 ## Context
 
-`my-agent-v2` needs local durable storage for session routing, transcripts, runtime metadata, and later application state without coupling domain modules to SQLite or allowing Gateway handlers to become data-access code.
+`my-agent-v2` needs local durable storage for session routing, transcripts, per-run execution evidence, runtime metadata, and later application state without coupling domain modules to SQLite or allowing Gateway handlers to become data-access code.
 
 The current repository foundation already contains:
 
@@ -37,7 +39,9 @@ The architecture also requires:
 - no direct SQLite access from Gateway or Agent Runtime;
 - storage lifecycle composed in `src/bootstrap/`;
 - durable identity and session invariants preserved across restart;
-- future multi-agent isolation without treating the V1 `primary` agent as a global singleton.
+- future multi-agent isolation without treating the V1 `primary` agent as a global singleton;
+- a durable, ordered `RunJournalStore` and debug-artifact index for development-first observability under ADR 0010.
+- a durable `UsageLedgerStore` for model-call reservations, settlement, uncertain accounting, and cumulative budget queries under ADR 0015.
 
 Without a storage decision, implementation could drift into incompatible patterns such as:
 
@@ -49,7 +53,10 @@ Without a storage decision, implementation could drift into incompatible pattern
 - editing a migration that has already run on user data;
 - performing destructive legacy imports during ordinary startup;
 - splitting into multiple database files before ownership and lifecycle require it;
-- copying a live SQLite file as a backup while WAL state remains outside the main file.
+- copying a live SQLite file as a backup while WAL state remains outside the main file;
+- writing unbounded debug payloads inline with journal rows;
+- silently deleting execution evidence when storage grows;
+- clearing a session transcript and unintentionally deleting pinned run evidence.
 
 OpenClaw currently uses SQLite as its canonical runtime state layer and separates shared control-plane state from per-agent state. It also treats legacy files as migration inputs rather than an active fallback and uses verified SQLite snapshots for portable backups.
 
@@ -151,6 +158,8 @@ Examples:
 ```text
 src/sessions/session-store.ts
 src/sessions/transcript-store.ts
+src/agents/run-journal-store.ts
+src/memory/memory-store.ts
 ```
 
 Concrete SQLite adapters may remain beside the domain contracts when that keeps mapping and invariants clear:
@@ -158,6 +167,8 @@ Concrete SQLite adapters may remain beside the domain contracts when that keeps 
 ```text
 src/sessions/sqlite-session-store.ts
 src/sessions/sqlite-transcript-store.ts
+src/agents/sqlite-run-journal-store.ts
+src/memory/sqlite-memory-store.ts
 ```
 
 Alternatively, a future infrastructure layout may place adapters under `src/storage/` if ownership remains explicit. File placement alone must not change the dependency direction.
@@ -180,7 +191,197 @@ Store contracts must use domain types and domain-shaped operations. They must no
 - SQLite-specific result codes;
 - caller-managed transactions as a default application API.
 
-A concrete store persists and loads domain state. It does not become the authority for routing, reset permission, run sequencing, policy, or transcript semantics that belong to higher-level domain services and previous ADRs.
+A concrete store persists and loads domain state. It does not become the authority for routing, reset permission, run sequencing, policy, transcript semantics, or memory write/recall policy that belong to higher-level domain services and previous ADRs. `MemoryStore` owns curated-memory persistence and search operations; callers do not issue FTS5 or memory-table queries directly.
+
+`UsageLedgerStore` is owned by the Usage Runtime. Storage implements durable reservation/settlement operations and bounded aggregate queries; it does not decide price semantics, cap-policy matching meaning, model fallback, or checkpoint behavior.
+
+## Transcript sequencing, atomic batches, and cursor indexes
+
+SQLite transcript persistence must support the sequencing and batching contracts in ADR 0003 and ADR 0007.
+
+The logical transcript schema preserves equivalents of:
+
+```text
+transcript entries keyed by sessionId and sequence
+opaque entryId
+structural group or exchange association
+atomic batch identity when applicable
+provider continuation association
+createdAt metadata
+```
+
+The database enforces uniqueness of `(sessionId, sequence)` and `entryId`. An index beginning with `(sessionId, sequence)` supports bounded forward history reads and tail lookup.
+
+`TranscriptStore.appendBatch` owns one short transaction that:
+
+1. reads or validates the current tail sequence;
+2. compares it with `expectedTailSequence`;
+3. allocates one contiguous sequence range;
+4. inserts every transcript entry and required provider-continuation association;
+5. commits the complete batch or rolls back all of it.
+
+Callers do not allocate sequence numbers and do not keep a database transaction open across model calls, tool execution, browser work, or approval waits.
+
+History cursors remain opaque application tokens. SQLite adapters consume the decoded, validated `(sessionId, sequence)` position but do not expose row IDs or offset pagination as durable API semantics.
+
+A cursor for an old `sessionId` remains valid only for reading that historical transcript when the caller explicitly addresses it. It is never silently reused for the new current `sessionId` after reset.
+
+## Memory persistence and FTS5
+
+ADR 0014 makes curated cross-session memory a V1 durable capability.
+
+The domain contract is `MemoryStore`. The Memory Runtime owns entry semantics, provenance, supersession, retrieval policy, and index-revision meaning; storage owns SQLite persistence and FTS5 projection mechanics.
+
+The initial logical schema preserves equivalents of:
+
+```text
+memory entries and revisions/status
+memory provenance references
+active searchable memory FTS5 projection
+monotonic memory index revision
+```
+
+Create, supersede, delete, purge, and index updates use short transactions. A mutation is not reported as successful when its required FTS projection did not commit.
+
+The FTS projection indexes only eligible active content. Deleted or superseded entries remain available for historical evidence according to policy but do not appear in normal active recall.
+
+A committed mutation advances the memory index revision. Search returns the revision used so a run can freeze one reproducible `MemoryRecallSnapshot`.
+
+Index rebuild is an explicit maintenance operation with validation and journal evidence. Storage must not silently fall back to an unindexed table scan while claiming equivalent ranking semantics.
+
+Raw credentials, provider continuation, private reasoning, and unrestricted debug payloads are not valid memory rows or FTS content.
+
+## Usage accounting, reservations, and cap transactions
+
+The V1 SQLite database stores usage reservations, dispatch markers, terminal accounting state, normalized actual usage, derived cost, matched cap-policy revisions, price revision, and bounded query indexes under the `UsageLedgerStore` contract.
+
+A model-call reservation uses a short transaction that atomically:
+
+```text
+resolves matching UTC day/month policy windows
+reads settled totals plus active/dispatched/uncertain reservations
+checks every matching token and cost cap
+inserts the reservation and policy revisions when allowed
+```
+
+Check and insert are one transaction. Storage may use `BEGIN IMMEDIATE` or another owned transaction mode that serializes competing reservations correctly.
+
+Dispatch is marked durably before provider network I/O. No database transaction remains open during the call.
+
+Settlement, release, and uncertain transitions are idempotent and terminal for one reservation. A dispatched reservation without terminal accounting is not deleted or treated as zero during recovery. Never-dispatched reservations may be released by explicit startup/recovery logic; orphaned dispatched reservations become uncertain until reconciled.
+
+Usage records and reservations are independent from transcript, Run Journal, session runtime summary, and technical-log retention. Session reset and ordinary journal clear do not delete usage state.
+
+Indexes support bounded queries by model call, run, session, agent, provider/model, UTC window, cap policy, and reservation status. V1 does not require hourly materialized summaries, Redis counters, or distributed locks.
+
+## Run Journal and debug-artifact persistence
+
+ADR 0010 makes per-run execution evidence a V1 durable capability.
+
+The domain contract is `RunJournalStore`. Agent Runtime owns the meaning and ordering of run evidence; storage owns the concrete SQLite persistence mechanism.
+
+The initial logical schema includes equivalents of:
+
+```text
+run_journals
+run_journal_entries
+debug_artifacts
+```
+
+Exact table and column names may be refined by the implementation plan, but the schema must preserve these relationships:
+
+- one run manifest per `runId`;
+- journal entries uniquely ordered by `(runId, sequence)`;
+- each entry has an explicit schema version;
+- artifact metadata references one owning run and, where applicable, one journal entry;
+- pinned-evidence state is explicit;
+- terminal status is normalized and cannot conflict within one run;
+- deletion can select one run without scanning or rewriting unrelated transcripts.
+
+Run Journal rows contain bounded metadata, identifiers, decisions, references, hashes, and normalized errors. Large content and binary payloads are not stored inline.
+
+Debug artifacts may be stored as files under an application-owned artifact directory when they are too large or unsuitable for SQLite. SQLite stores their authoritative metadata, ownership, size, hash, redaction status, and location.
+
+Artifact creation follows a safe sequence that prevents a successful metadata reference from pointing to an incomplete payload. Artifact deletion follows a compensating or transactional workflow so the database and file store do not silently diverge.
+
+The V1 development policy is manual clear, not silent auto-pruning.
+
+Storage operations must support application-level equivalents of:
+
+```text
+inspect usage
+preview clear selection
+clear one run
+clear unpinned runs for one session
+clear unpinned runs before a date
+clear all unpinned runs
+```
+
+Broad clear operations require explicit confirmation at the calling surface. The store itself accepts an already-authorized deletion selection and reports affected counts and bytes.
+
+Pinned evidence is excluded from ordinary clear operations. Deleting pinned evidence requires an explicit override and must not happen as a side effect of session reset, transcript deletion, log rotation, or ordinary retention maintenance.
+
+Warning thresholds and hard storage limits are configuration. Reaching a limit must not silently delete old evidence. Required compact journal entries remain fail-closed; optional debug-artifact capture may enter a declared degraded mode according to ADR 0010.
+
+## Session runtime summary projection
+
+`FinalizeStage` may persist a bounded session-level projection for diagnostics and UI lookup without scanning the full transcript or Run Journal.
+
+The logical projection is `SessionRuntimeSummary` and may include:
+
+```text
+sessionKey and current sessionId
+lastRunId
+lastRunStatus
+lastModelId
+lastInputTokens
+lastOutputTokens
+lastContextTokens
+lastToolCallCount
+lastRunDurationMs
+lastCheckpointDecision
+lastNoProgressSignal when applicable
+lastTranscriptEntryCount
+lastTranscriptHeadSequence
+measurement: exact | unknown
+updatedAt
+```
+
+This projection is owned by the sessions/application boundary and may be stored as dedicated columns or a separately owned table such as `session_runtime_summaries`. The implementation plan may refine the shape.
+
+Token, count, and duration fields are recorded as exact values when produced by the owning provider or store. When an exact value is unavailable, the field is omitted or marked `unknown`; heuristic estimates are not presented as exact evidence.
+
+The summary is not:
+
+- a replacement for Run Journal evidence;
+- a source for reconstructing the run;
+- a transcript record;
+- an authority for run terminal state;
+- a place for raw prompts, model responses, tool payloads, thought signatures, or credentials.
+
+Only terminal finalization updates the projection. A failed summary update is recorded as degraded projection evidence and does not overwrite a newer summary. Because the summary is non-authoritative, its failure does not by itself invalidate an otherwise durable transcript and terminal Run Journal outcome unless a later configuration contract explicitly makes it required.
+
+## Provider continuation persistence
+
+Some model providers require opaque continuation data to reconstruct a valid later stateless request.
+
+For the V1 Gemini integration, `TranscriptStore` persists provider continuation sidecars associated with the relevant transcript entries or model exchanges. The Gemini adapter owns provider encoding and validation; Context and Agent Runtime access the data only through owned contracts. Sidecars may include typed Interactions API steps, thought signatures, provider interaction/request identifiers, and exact step or part associations.
+
+The persistence contract must follow these rules:
+
+- provider continuation is stored under explicit provider and schema versions;
+- it is associated with the owning `sessionId`, transcript/model-exchange record, `runId`, and model route where applicable;
+- raw opaque signatures are not indexed for search;
+- raw signatures are not duplicated into Run Journal rows, logs, Gateway events, or ordinary debug artifacts;
+- diagnostics use counts, presence flags, hashes, and validation status;
+- provider continuation is returned only to trusted model/context infrastructure;
+- normal transcript history APIs omit it unless a privileged diagnostic contract explicitly requests bounded metadata;
+- deletion and reset behavior follows transcript-instance ownership, while Run Journal evidence retains only non-secret references or hashes;
+- migrations preserve opaque bytes exactly and do not parse or rewrite them unless a dedicated migration is required.
+
+Provider continuation is not a credential, but it is sensitive execution data and receives the same default logging and access restrictions as sensitive model payloads.
+
+The Gemini API key is never stored as ordinary SQLite configuration, transcript metadata, provider continuation, journal metadata, or debug artifact. SQLite may store only a non-secret credential reference when the configuration design requires it.
 
 ## Canonical state and file boundaries
 
@@ -224,6 +425,39 @@ Unclassified application state must not be introduced as an ad hoc file.
 
 Credential persistence and secret-store topology are outside this ADR. A future credential decision must still obey the canonical-source and no-silent-fallback rules defined here.
 
+## Derived-data cache
+
+V1 may use one process-local `InMemoryDerivedDataCache` for values that can be rebuilt completely from authoritative resources, registries, configuration, or canonical stores. It is infrastructure optimization, not a domain store and not a second source of truth.
+
+Eligible values include bounded:
+
+- parsed and validated agent-resource manifests;
+- rendered agent-revision-stable Prompt Plan fragments;
+- compiled or provider-normalized tool schemas;
+- model/provider capability metadata;
+- deterministic sanitizer, delimiter, and renderer output.
+
+Cache keys include every correctness-relevant revision or fingerprint, such as:
+
+```text
+agentId + agentRevision + resourceAggregateHash + loaderVersion
+promptProfileVersion + sectionId + sourceHash + rendererVersion
+toolRegistryFingerprint + modelCapabilityFingerprint + providerAdapterVersion
+```
+
+TTL or LRU may evict memory, but correctness comes from revisions and hashes. A cache miss, eviction, or cache failure reads the source of truth and rebuilds the value. No durable migration or recovery procedure depends on cache contents.
+
+V1 does not cache or treat as authoritative:
+
+- policy, authorization, approval, or sandbox decisions;
+- current transcript snapshots or session queue state;
+- memory mutations or current recall results;
+- provider continuation sidecars;
+- browser tab/session state;
+- credentials or secret-bearing values.
+
+A security-decision cache failure must query the authoritative boundary and must never default to allow. Redis, cross-process cache coherence, persistent cache tables, and cache-as-authority behavior are deferred.
+
 ## Schema ownership
 
 Each persistent table has one owning module or capability.
@@ -239,7 +473,7 @@ The owner defines:
 
 Tables may share one SQLite file without sharing business ownership.
 
-The initial schema may include session and migration tables. Future modules must not place unrelated fields into an existing table merely to avoid creating a properly owned schema.
+The initial schema includes session and migration tables. The first Agent Runtime slice also introduces domain-owned transcript/provider-continuation persistence, Run Journal, debug-artifact metadata, and the bounded session runtime summary projection through new migrations. Future modules must not place unrelated fields into an existing table merely to avoid creating a properly owned schema.
 
 Database constraints should reinforce durable invariants where SQLite can represent them safely, including applicable:
 
@@ -347,11 +581,15 @@ preserve prior mapping if any step fails
 
 That operation must not be implemented as unrelated independently committed calls that can leave a current session pointing to missing transcript state.
 
+A transcript append batch similarly owns one short transaction for expected-tail validation, contiguous sequence allocation, canonical entries, and required provider continuation. Partial batch commit is forbidden.
+
 The storage layer may provide an internal transaction context accepted by concrete store adapters. The public application contract should remain domain-shaped rather than exposing generic transaction management to Gateway handlers or Agent Runtime code.
 
 Nested transaction assumptions must be avoided unless the storage implementation defines their semantics explicitly.
 
 Long-running model calls, tool execution, browser operations, network calls, or human approval waits must never hold an open SQLite transaction.
+
+Usage reservation checks and inserts are atomic short transactions. The provider call occurs only after commit; settlement is a separate short idempotent transaction.
 
 The per-session run lane from ADR 0006 coordinates runtime ordering. It does not replace database transactions for durable atomicity.
 
@@ -388,10 +626,11 @@ Stores should expose the smallest reads required by active consumers.
 Transcript and history APIs must support bounded access before data grows without limit. Appropriate forms include:
 
 - tail reads;
-- pagination;
-- cursors;
-- bounded ranges;
+- opaque cursor reads by `(sessionId, sequence)`;
+- bounded sequence ranges;
 - targeted lookup by durable identity.
+
+Offset pagination and raw SQLite row IDs are not stable history contracts.
 
 Normal startup must not load every transcript or materialize all durable state into memory.
 
@@ -457,7 +696,7 @@ Schema migration, session reset, archival, and permanent deletion are separate o
 
 A migration must not delete user-visible durable history merely because it is no longer current unless the migration's accepted product contract explicitly requires that deletion and provides recovery safeguards.
 
-Session reset follows ADR 0003 and preserves the prior transcript by default.
+Session reset follows ADR 0003 and preserves the prior transcript by default. Memory delete or purge is an independent explicit operation and is not implied by session reset, transcript deletion, journal clear, artifact clear, or agent-resource replacement.
 
 Future cleanup, retention, redaction, and secure-deletion behavior require explicit ownership and product policy. Ordinary storage compaction or SQLite vacuuming must not be described as semantic deletion guarantees.
 
@@ -475,6 +714,7 @@ The minimum migration and adapter test coverage includes:
 - a database newer than the application is rejected;
 - foreign-key and uniqueness constraints protect declared invariants;
 - SQLite stores satisfy the same behavioral contract as in-memory test stores where both implementations exist;
+- MemoryStore tests cover FTS5 synchronization, agent isolation, provenance, supersession, deletion, bounded deterministic search, and memory index-revision advancement;
 - data survives database close and reopen;
 - session resolution remains stable across restart;
 - create and reset operations do not leave partial mappings;
@@ -576,6 +816,44 @@ Mitigation:
 - do not open independent unmanaged connections per module;
 - revisit before adding workers, remote nodes, or distributed execution.
 
+### Provider continuation becomes unreadable or detached
+
+Opaque Gemini continuation may be lost, reordered, or separated from the transcript exchange it belongs to.
+
+Mitigation:
+
+- persist explicit ownership and ordinal associations;
+- version the sidecar schema;
+- verify byte-exact round trips in adapter tests;
+- use foreign-key or equivalent integrity checks where practical;
+- fail with incompatible-history errors rather than fabricate missing continuation.
+
+### Development evidence consumes disk space
+
+Full development capture can grow faster than session history.
+
+Mitigation:
+
+- keep journal rows bounded and indexed;
+- store large payloads as artifacts;
+- expose usage by run and session;
+- provide dry-run and explicit clear operations;
+- protect pinned evidence;
+- support production and targeted capture profiles;
+- never silently prune development evidence.
+
+### Artifact metadata and files diverge
+
+A crash may leave an orphan file or a missing payload reference.
+
+Mitigation:
+
+- use temporary files and atomic rename where supported;
+- write and verify content hashes;
+- commit metadata only after payload durability is established;
+- provide integrity scanning and orphan cleanup as explicit maintenance operations;
+- represent missing artifacts as degraded evidence rather than hiding them.
+
 ## Rejected alternatives
 
 ### Let each module open its own SQLite database immediately
@@ -614,6 +892,46 @@ Rejected because databases that already recorded the version would not rerun the
 
 Rejected because availability does not justify silent user-data loss.
 
+### Let transcript callers allocate sequence numbers
+
+Rejected because sequence allocation must be atomic with expected-tail validation and batch commit.
+
+### Use offset pagination or SQLite row IDs as public history cursors
+
+Rejected because storage reorganization, filtering, and reset would make those cursors ambiguous or unstable.
+
+### Commit structurally related transcript entries in separate transactions
+
+Rejected because a crash or storage failure could leave canonical history with orphaned tool or continuation records.
+
+### Store all debug payloads inline in SQLite journal rows
+
+Rejected because large model responses, browser observations, shell output, and screenshots would bloat hot journal tables, weaken bounded queries, and make retention and redaction coarse. SQLite indexes metadata and ownership; large payloads use managed artifacts.
+
+### Store raw thought signatures in Run Journal rows
+
+Rejected because signatures are provider continuation data, not execution-summary metadata. Journal entries retain counts, hashes, and persistence status only.
+
+### Store the Gemini API key in the application database
+
+Rejected because V1 uses a host-owned secret-bearing configuration or credential reference. Ordinary application persistence must not become a credential vault by accident.
+
+### Use Redis or a persistent cache in V1
+
+Rejected because the initial deployment is one local process and all selected cache values are rebuildable. A network or persistent cache would add invalidation, availability, and migration concerns without becoming an authority.
+
+### Use TTL as the cache consistency contract
+
+Rejected because stale values could survive until expiry. Correctness-sensitive keys include source revisions, content hashes, and renderer/provider versions; TTL is eviction only.
+
+### Automatically prune old development journals
+
+Rejected because silent deletion removes evidence required to reproduce and verify bugs. Development uses manual clear and pinned evidence; configured production retention may be added without changing ownership.
+
+### Delete journal evidence during session reset
+
+Rejected because transcript reset and development evidence have different lifecycle and authority. A reset starts a new transcript instance but does not erase why previous runs behaved as they did.
+
 ### Hold a transaction for an entire agent run
 
 Rejected because model calls, tools, approvals, and browser operations are long-running and would create lock contention and fragile recovery. Transactions protect bounded durable mutations, while ADR 0006 controls run ordering.
@@ -621,6 +939,18 @@ Rejected because model calls, tools, approvals, and browser operations are long-
 ### Implement reverse migration for every schema change
 
 Rejected because reverse migrations can be destructive and are difficult to validate. Verified restore is the default downgrade recovery model until a specific product requirement justifies reversible migration tooling.
+
+### Calculate cumulative usage by scanning Run Journal rows
+
+Rejected because journal retention and schema serve execution evidence, not accounting authority or atomic concurrent reservation.
+
+### Check a cap and insert its reservation in separate transactions
+
+Rejected because concurrent sessions could both pass the check and overspend the same headroom.
+
+### Automatically release every stale dispatched reservation
+
+Rejected because the provider may have completed and billed the call. Dispatched unresolved reservations become explicit uncertain state.
 
 ## Validation
 
@@ -631,7 +961,32 @@ This decision is correctly applied when:
 - Gateway, Agent Runtime, Context, Harness, Model, Policy, and Tool modules do not issue SQL directly;
 - domain modules expose narrow store contracts using domain types;
 - concrete SQLite adapters are the only normal path from those contracts to SQL;
-- `SessionStore` and `TranscriptStore` remain separate contracts even when sharing one database;
+- `SessionStore`, `TranscriptStore`, `RunJournalStore`, `MemoryStore`, and `UsageLedgerStore` remain separate domain contracts even when sharing one database;
+- memory mutations and required FTS5 projection changes commit consistently;
+- memory recall returns and records the index revision used;
+- transcript entries have store-assigned monotonic sequences unique within each `sessionId`;
+- `(sessionId, sequence)` is indexed and used for bounded cursor reads;
+- `appendBatch` validates the expected tail and commits a contiguous sequence range atomically;
+- failed or stale transcript batches do not partially commit entries or provider continuation;
+- history cursors do not expose SQLite offsets or row IDs;
+- required Gemini continuation data survives SQLite close/reopen and produces an equivalent stateless request projection;
+- raw thought signatures are not searchable, logged, journaled, or returned by normal history APIs;
+- the Gemini API key is absent from ordinary SQLite tables and artifacts;
+- one run manifest exists per journaled run and `(runId, sequence)` is uniquely ordered;
+- journal entries remain bounded while large payloads use owned debug artifacts;
+- artifact metadata includes ownership, size, hash, and redaction state;
+- journal and artifact clear operations are independently scoped from transcript and log deletion;
+- ordinary clear excludes pinned evidence and supports an inspect or dry-run path;
+- session reset does not delete run evidence;
+- storage limits do not silently auto-delete journal evidence;
+- session runtime summaries remain bounded projections updated through terminal finalization;
+- summary rows reference the last run and checkpoint outcome without duplicating journal payloads;
+- a summary cannot overwrite a newer terminal run projection;
+- usage cap check-plus-reserve is one short atomic transaction and no provider I/O occurs inside it;
+- dispatch state commits before provider network I/O;
+- usage settlement/release/uncertain transitions are idempotent and terminal per reservation;
+- active, dispatched, and uncertain reservations remain queryable and counted rather than being silently expired;
+- session reset, transcript deletion, and journal clear do not delete usage accounting state;
 - cross-store invariants use a coordinated transaction or safe compensation rather than partial independent commits;
 - every schema change adds a new ordered migration;
 - applied migration files are not edited, renamed, or renumbered;
@@ -642,7 +997,10 @@ This decision is correctly applied when:
 - constraints and adapter tests protect durable identity and session invariants;
 - database close and restart preserve state and release file resources;
 - backup plans account for SQLite WAL or use a supported snapshot mechanism;
-- architecture and implementation do not claim a global/per-agent database split until it is actually introduced.
+- architecture and implementation do not claim a global/per-agent database split until it is actually introduced;
+- derived-data cache values are process-local, revision/hash-keyed, rebuildable, and never used as policy or durable-state authority;
+- cache failure falls back to authoritative reads/recomputation rather than an in-memory or security fail-open path;
+- tests prove that revision/hash changes miss stale cache entries and that policy/approval behavior is identical with cache disabled.
 
 ## Revisit conditions
 
@@ -650,27 +1008,45 @@ Revisit this decision when:
 
 - more than one agent has enough data or lifecycle independence to justify per-agent databases;
 - multiple processes or remote workers need concurrent database access;
+- usage reservations require distributed coordination or provider-backed reconciliation;
 - a subsystem requires independent backup, restore, encryption, retention, or failure isolation;
 - database size or write contention exceeds acceptable local SQLite behavior;
 - user-facing backup and restore become a release requirement;
 - credentials or other highly sensitive state require a separate encrypted store;
+- provider continuation needs encryption at rest or an independent sensitive-payload store;
+- Gemini server-side conversation state replaces local continuation replay;
 - plugins need durable schemas or namespaced key-value storage;
+- multiple processes require shared derived-data caching or explicit invalidation coordination;
+- cache volume or computation cost justifies Redis or another cache backend;
 - online migrations or zero-downtime upgrades become necessary;
 - session or transcript state must replicate across devices;
+- session runtime summary history becomes a product feature rather than a last-run projection;
 - a non-SQLite backend is required;
-- the project introduces a persistent event or audit store with materially different retention and integrity requirements.
+- Run Journal volume requires partitioning, compression, or a dedicated backend;
+- evidence requires tamper resistance, signing, or immutable storage;
+- production retention requires automatic pruning with stronger guarantees;
+- the project introduces a persistent general-purpose event or audit store with materially different retention and integrity requirements.
 
 ## References
 
+- `docs/decisions/0015-usage-accounting-and-cumulative-budget-enforcement.md`
+- `docs/decisions/0014-memory-ownership-retrieval-and-evolution.md`
 - `docs/ARCHITECTURE.md`, section 11, **Sessions and transcripts**
-- `docs/ARCHITECTURE.md`, section 19, **Storage and migrations**
-- `docs/ARCHITECTURE.md`, section 21, **Lifecycle and composition**
-- `docs/ARCHITECTURE.md`, section 22, **Dependency direction**
+- `docs/ARCHITECTURE.md`, section 20, **Storage and migrations**
+- `docs/ARCHITECTURE.md`, section 22, **Lifecycle and composition**
+- `docs/ARCHITECTURE.md`, section 23, **Dependency direction**
 - `docs/decisions/0002-core-runtime-identities-and-agent-ownership.md`
 - `docs/decisions/0003-session-routing-transcript-separation-and-reset-semantics.md`
 - `docs/decisions/0006-run-attempt-lifecycle-and-per-session-serialization.md`
 - `docs/decisions/0007-context-assembly-and-transcript-mutation-authority.md`
+- `docs/decisions/0010-runtime-events-logs-transcripts-and-audit-separation.md`
 - OpenClaw database-first state refactor: `https://docs.openclaw.ai/refactor/database-first`
 - OpenClaw session management deep dive: `https://docs.openclaw.ai/reference/session-management-compaction`
 - OpenClaw backup reference: `https://docs.openclaw.ai/cli/backup`
 - OpenClaw updating and rollback guidance: `https://docs.openclaw.ai/install/updating`
+- Gemini Interactions API stateless mode: `https://ai.google.dev/gemini-api/docs/interactions-overview`
+- Gemini thought signatures: `https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures`
+- GoClaw, **Caching**: `https://docs.goclaw.sh/caching`
+- GoClaw source, **Caching**: `https://github.com/nextlevelbuilder/goclaw-docs/blob/master/advanced/caching.md`
+- GoClaw, **How GoClaw Works**: `https://docs.goclaw.sh/how-goclaw-works`
+- GoClaw, **Sessions and History**: `https://docs.goclaw.sh/sessions-and-history`

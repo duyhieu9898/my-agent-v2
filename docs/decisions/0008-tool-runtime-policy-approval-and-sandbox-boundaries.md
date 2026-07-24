@@ -150,12 +150,14 @@ sensitivity or capability classification
 execution target requirements
 sandbox compatibility or requirements
 timeout and cancellation support
+concurrency trait: parallel-safe or sequential
 ```
 
 A tool may also declare:
 
 ```text
 idempotency behavior
+no-progress fingerprint hints
 approval summary renderer
 redaction rules
 resource limits
@@ -185,7 +187,7 @@ privileged or high-risk
 
 Read-only does not mean unrestricted. Reading credentials, private files, browser state, or external account data may still be denied by policy.
 
-All side-effecting and privileged calls require an explicit policy decision.
+All side-effecting and privileged calls require an explicit policy decision. Memory create, supersede, delete, and purge operations are side effects even when they modify only local SQLite state.
 
 A generic execution tool such as shell `exec` is classified by its full capability, not by whether a particular command appears harmless. Denying dedicated file-write tools does not make unrestricted shell execution read-only.
 
@@ -204,6 +206,8 @@ built-in or owning module
 
 Context assembly receives only the effective schemas visible for the current model call.
 
+Memory tools are registered Tool Runtime capabilities. They validate proposals, invoke policy and approval, then call the Memory Runtime through its application contract. Context assembly, Harnesses, providers, and CheckpointStage cannot bypass this path to mutate memory.
+
 Concrete tool implementations may come from:
 
 - built-in filesystem or workspace tools;
@@ -215,6 +219,26 @@ Concrete tool implementations may come from:
 Core modules must consume registered contracts rather than special-case each implementation.
 
 Dynamic registry replacement, plugin unloading, and in-flight snapshot migration are deferred. When added, a run or attempt must retain a coherent registry snapshot rather than observing partial changes.
+
+## Prompt guidance does not grant capability
+
+Agent resources, Prompt Plan sections, memory, skills, transcript content, and provider-generated text may describe tool usage. They do not create runtime capability.
+
+Guidance-only sources include `CAPABILITIES.md`-like resources, `TOOLS.md`-like notes, skill instructions, memory entries, user/web content, and provider-generated tool suggestions.
+
+Model-visible capability is derived only from:
+
+```text
+published Tool Registry snapshot
+→ visibility policy evaluation
+→ validated Prompt Plan tool-definition section
+```
+
+Invocation authority comes only from validated tool identity/arguments, invocation-time policy, approval state, and sandbox/execution contracts.
+
+Prompt content cannot register or replace tools, manufacture schemas, enable omitted tools, grant filesystem/shell/browser/network/memory-write permission, weaken approval or sandbox requirements, redefine side-effect/concurrency traits, or convert untrusted data into host instructions.
+
+Prompt Plan records tool-definition hashes and registry fingerprints, but prompt text is never authorization.
 
 ## Policy boundary
 
@@ -434,6 +458,38 @@ cleanup
 
 A sandbox reduces blast radius but is not assumed to be a perfect security boundary.
 
+## Tool batch planning and concurrency
+
+When one model step requests multiple tools, Tool Runtime creates one explicit batch execution plan before any tool I/O begins.
+
+The planning order is:
+
+```text
+validate and normalize every call
+→ resolve every descriptor and execution trait
+→ evaluate invocation policy for every call
+→ resolve every required approval
+→ resolve sandbox and execution targets
+→ enforce batch and run tool-call budgets
+→ choose bounded-parallel or sequential scheduling
+→ execute
+→ return results in original model-call order
+```
+
+V1 scheduling rules are:
+
+- only registered `read-only` tools that explicitly declare `parallel-safe` are eligible for bounded parallel execution;
+- side-effecting, privileged, shell, browser-mutating, unknown, unregistered, or explicitly sequential tools run sequentially;
+- a mixed batch containing any ineligible call runs entirely sequentially in V1;
+- unknown traits fail to sequential rather than parallel;
+- policy and approval complete before parallel I/O begins;
+- parallelism is bounded by runtime-wide Tool Runtime permits;
+- result processing and transcript observation preserve the original model-call order even when raw I/O completes out of order.
+
+Tool Runtime returns normalized execution outcomes and progress signals to Agent Runtime. It does not decide whether the model/tool loop continues. `CheckpointStage` is the sole continuation authority under ADR 0006.
+
+The execution plan and actual schedule are observable through Run Journal metadata, including the batch size, eligibility decision, concurrency limit, call order, completion order when useful, and stable reason for sequential fallback.
+
 ## Execution lifecycle
 
 After all gates pass, Tool Runtime executes the call through a normalized lifecycle:
@@ -462,7 +518,7 @@ The runtime enforces:
 
 Tool implementations return normalized data to Tool Runtime. They do not append directly to the canonical transcript.
 
-Agent Runtime decides which normalized tool request and result entries become durable through `TranscriptStore`, consistent with ADR 0007.
+Agent Runtime decides which normalized tool request and result entries become durable through `TranscriptStore`, consistent with ADR 0007. Tool outcomes may carry typed progress evidence, such as changed resource version, created artifact reference, external operation status, or no observable state delta, for use by `CheckpointStage`.
 
 ## Timeout, cancellation, and uncertain outcomes
 
@@ -554,6 +610,8 @@ A shared registry describes available implementations. It does not grant every r
 - Harnesses, providers, MCP integrations, browser tools, and future plugins share the same host authority model.
 - Stronger sandbox backends can be introduced without moving policy into the sandbox implementation.
 - Per-agent least-privilege configurations remain possible.
+- Tool batching remains deterministic and inspectable while allowing safe bounded parallel reads.
+- CheckpointStage receives explicit tool progress evidence instead of inferring loop state from log text.
 
 ### Negative
 
@@ -562,6 +620,8 @@ A shared registry describes available implementations. It does not grant every r
 - V1 host execution remains less isolated until a strong sandbox backend exists.
 - Two-stage policy evaluation adds implementation and testing cost.
 - Provider-native or Harness-native execution features may need to be disabled or adapted.
+- Conservative mixed-batch serialization may leave some safe parallelism unused in V1.
+- Tool descriptors require accurate concurrency and progress metadata.
 
 ## Risks and trade-offs
 
@@ -619,6 +679,17 @@ Mitigation:
 - clear pending state;
 - revisit resumable approval when real workflows require it.
 
+### Incorrect parallel-safety metadata
+
+A tool may be marked read-only or parallel-safe even though it mutates shared state or depends on execution order.
+
+Mitigation:
+
+- default unknown tools to sequential;
+- require registration tests for concurrency traits;
+- classify generic shell, browser mutation, MCP bridge, and privileged tools conservatively;
+- journal the execution plan and concurrency reason.
+
 ### Indirect side effects through generic tools
 
 Allowing `exec`, scripting runtimes, browser automation, or plugin tools may bypass narrower tool-name policy expectations.
@@ -639,6 +710,10 @@ Rejected because each Harness would create its own authority, policy, approval, 
 ### Let model providers execute native tools directly
 
 Rejected because provider-native execution could bypass local policy, approval, sandboxing, transcript normalization, and event production.
+
+### Let `CAPABILITIES.md`, `TOOLS.md`, skills, or memory grant tools
+
+Rejected because guidance is model context, not trusted runtime registration or authorization. Allowing it to create capability would bypass registry, policy, approval, and audit boundaries.
 
 ### Treat prompt instructions as policy
 
@@ -668,6 +743,14 @@ Rejected because fallback would expand authority precisely when an enforcement c
 
 Rejected because the external action may already have completed even when the local result is missing or timed out.
 
+### Parallelize every read-only-looking batch
+
+Rejected because names are not reliable capability metadata, mixed batches may contain ordering dependencies, and policy or approval must finish before any parallel I/O starts.
+
+### Let Tool Runtime decide whether the agent loop continues
+
+Rejected because Tool Runtime owns execution outcomes, not run orchestration. Continuation and retry belong to Agent Runtime `CheckpointStage`.
+
 ### Build a dynamic plugin tool system in V1
 
 Rejected because static registration is sufficient for the initial vertical slices and keeps the trust boundary reviewable.
@@ -679,6 +762,8 @@ This decision is correctly applied when:
 - model-initiated capabilities execute only through Tool Runtime;
 - tool inputs use runtime schemas and are validated before execution;
 - denied tools are absent from the effective model-visible schema set;
+- model-visible tool definitions derive from one published registry snapshot plus visibility policy and are hashed in Prompt Plan;
+- context resources, skills, memory, provider output, and untrusted data cannot register tools, manufacture schemas, or grant permissions;
 - every invocation is re-evaluated with normalized arguments;
 - every side-effecting call receives `allow`, `deny`, or `require-approval`;
 - `deny` cannot be overridden by approval, Harness behavior, provider behavior, session directives, or sandbox configuration;
@@ -693,7 +778,14 @@ This decision is correctly applied when:
 - side-effecting calls are not automatically replayed;
 - per-agent tests prove that registry availability does not equal agent authorization;
 - logs and events correlate tool calls without exposing secrets;
-- integration tests cover allow, deny, approval allow, approval deny, approval timeout, cancellation, sandbox unavailable, and implementation failure paths.
+- integration tests cover allow, deny, approval allow, approval deny, approval timeout, cancellation, sandbox unavailable, and implementation failure paths;
+- tool descriptors declare side-effect and concurrency traits, with unknown traits defaulting to sequential;
+- a batch is fully validated, policy-checked, approved, and budget-checked before any parallel I/O begins;
+- only read-only, parallel-safe calls execute in bounded parallel;
+- mixed or ineligible batches execute sequentially in V1;
+- normalized results are returned in original model-call order;
+- Tool Runtime emits progress signals but cannot start another model cycle;
+- Run Journal records the batch execution plan and sequential-fallback reason.
 
 ## Revisit conditions
 
@@ -710,17 +802,20 @@ Revisit this decision when:
 - elevated or break-glass execution becomes a product requirement;
 - side-effecting tools require transactions, compensation, or durable idempotency records;
 - policy must be evaluated by an external service;
-- untrusted agent-authored code or widgets receive executable capabilities.
+- untrusted agent-authored code or widgets receive executable capabilities;
+- real workloads require dependency-aware partial parallelism within mixed batches;
+- tool progress requires a stable cross-tool semantic contract beyond bounded signals.
 
 ## References
 
-- `docs/ARCHITECTURE.md`, section 12, **Tool Runtime**
-- `docs/ARCHITECTURE.md`, section 13, **Policy, approval, and sandbox**
-- `docs/ARCHITECTURE.md`, section 14, **Platform boundary**
-- `docs/ARCHITECTURE.md`, section 15, **Browser Runtime**
-- `docs/ARCHITECTURE.md`, section 18, **Multi-agent routing and delegates**
-- `docs/ARCHITECTURE.md`, section 20, **Events, logs, and audit**
-- `docs/ARCHITECTURE.md`, section 22, **Dependency direction**
+- `docs/decisions/0014-memory-ownership-retrieval-and-evolution.md`
+- `docs/ARCHITECTURE.md`, section 13, **Tool Runtime**
+- `docs/ARCHITECTURE.md`, section 14, **Policy, approval, and sandbox**
+- `docs/ARCHITECTURE.md`, section 15, **Platform boundary**
+- `docs/ARCHITECTURE.md`, section 16, **Browser Runtime**
+- `docs/ARCHITECTURE.md`, section 19, **Multi-agent routing and delegates**
+- `docs/ARCHITECTURE.md`, section 21, **Events, logs, and audit**
+- `docs/ARCHITECTURE.md`, section 23, **Dependency direction**
 - `docs/decisions/0005-agent-runtime-harness-and-model-provider-boundaries.md`
 - `docs/decisions/0006-run-attempt-lifecycle-and-per-session-serialization.md`
 - `docs/decisions/0007-context-assembly-and-transcript-mutation-authority.md`
@@ -730,3 +825,6 @@ Revisit this decision when:
 - OpenClaw Exec approvals: `https://docs.openclaw.ai/tools/exec-approvals`
 - OpenClaw Permission modes: `https://docs.openclaw.ai/tools/permission-modes`
 - OpenClaw Multi-agent sandbox and tools: `https://docs.openclaw.ai/tools/multi-agent-sandbox-tools`
+- GoClaw, **How GoClaw Works**: `https://docs.goclaw.sh/how-goclaw-works`
+- GoClaw, **System Prompt Anatomy**: `https://docs.goclaw.sh/system-prompt-anatomy`
+- GoClaw, **Context Files**: `https://docs.goclaw.sh/context-files`
