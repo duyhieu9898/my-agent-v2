@@ -1,0 +1,15 @@
+# Harness core maintenance binary
+scripts/bin/harness
+scripts/bin/harness.exe
+
+node_modules
+dist
+coverage
+.env
+.env.*
+!.env.example
+
+*.log
+.DS_Store
+.vscode
+.idea
