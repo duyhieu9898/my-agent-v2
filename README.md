@@ -5,19 +5,18 @@ A small, local-first personal agent for Linux with deliberate extension seams fo
 ## Requirements
 
 - Node.js 22.12+
-- pnpm 10+
+- pnpm 11+
 
 ## Start
 
 ```bash
 corepack enable
-corepack prepare pnpm@10 --activate
+corepack prepare pnpm@11.17.0 --activate
 pnpm install
 pnpm dev
 ```
 
-- API: http://127.0.0.1:3210
-- Web: http://127.0.0.1:5173
+- API & Gateway: http://127.0.0.1:3210 (/healthz, /ws)
 
 ## Current scope
 

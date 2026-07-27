@@ -2,10 +2,7 @@ import AjvModule from "ajv";
 
 const Ajv = AjvModule.default ?? AjvModule;
 
-import {
-  GatewayMethods,
-  type GatewayMethod,
-} from "./schema/methods.js";
+import { GatewayMethods, type GatewayMethod } from "./schema/methods.js";
 
 const ajv = new Ajv({
   allErrors: true,
@@ -29,9 +26,7 @@ export type MethodValidationResult =
       errors: string[];
     };
 
-export function isGatewayMethod(
-  method: string,
-): method is GatewayMethod {
+export function isGatewayMethod(method: string): method is GatewayMethod {
   return method in GatewayMethods;
 }
 
@@ -50,10 +45,9 @@ export function validateMethodParams(
 
   return {
     ok: false,
-    errors:
-      validate.errors?.map((error) => {
-        const path = error.instancePath || "/";
-        return `${path} ${error.message ?? "is invalid"}`;
-      }) ?? ["Invalid method params"],
+    errors: validate.errors?.map((error) => {
+      const path = error.instancePath || "/";
+      return `${path} ${error.message ?? "is invalid"}`;
+    }) ?? ["Invalid method params"],
   };
 }

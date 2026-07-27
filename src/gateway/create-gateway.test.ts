@@ -4,6 +4,15 @@ import WebSocket from "ws";
 
 import { InMemorySessionStore } from "../sessions/in-memory-session-store.js";
 import { SessionResolver } from "../sessions/session-resolver.js";
+import { InMemoryTranscriptStore } from "../sessions/in-memory-transcript-store.js";
+import { openDatabase } from "../storage/database.js";
+import { migrateDatabase } from "../storage/migrate.js";
+import { SqliteSessionStore } from "../sessions/sqlite-session-store.js";
+import { AgentRuntime } from "../agents/agent-runtime.js";
+import { SqliteRunJournalStore } from "../agents/run-journal-store.js";
+import { SqliteRunStore } from "../agents/run-store.js";
+import { RuntimeEventBus } from "../agents/runtime-events.js";
+import { SessionRunLaneCoordinator } from "../agents/session-run-lane.js";
 import { createGateway, type Gateway } from "./create-gateway.js";
 
 const logger = pino({
@@ -18,6 +27,87 @@ afterEach(async () => {
 });
 
 describe("Gateway WebSocket", () => {
+  it("does not cancel an admitted run when its client disconnects", async () => {
+    const database = openDatabase(":memory:");
+    migrateDatabase(database);
+    const sessions = new SqliteSessionStore(database);
+    let release: (() => void) | undefined;
+    const runtime = new AgentRuntime({
+      sessions: new SessionResolver(sessions),
+      transcripts: new InMemoryTranscriptStore(),
+      runs: new SqliteRunStore(database),
+      journal: new SqliteRunJournalStore(database),
+      events: new RuntimeEventBus(),
+      lanes: new SessionRunLaneCoordinator(1),
+      execute: () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    });
+    gateway = createGateway({
+      host: "127.0.0.1",
+      port: 43211,
+      logger,
+      dependencies: {
+        sessions,
+        sessionResolver: new SessionResolver(sessions),
+        transcripts: new InMemoryTranscriptStore(),
+        runtime,
+        runs: new SqliteRunStore(database),
+        journal: new SqliteRunJournalStore(database),
+      },
+    });
+    await gateway.start();
+    const socket = new WebSocket("ws://127.0.0.1:43211/ws");
+    const runId = await new Promise<string>((resolve, reject) => {
+      socket.once("error", reject);
+      socket.on("open", () =>
+        socket.send(
+          JSON.stringify({
+            type: "req",
+            id: "connect",
+            method: "connect",
+            params: {
+              minProtocol: 1,
+              maxProtocol: 1,
+              client: { name: "test", version: "0", mode: "cli" },
+            },
+          }),
+        ),
+      );
+      socket.on("message", (data) => {
+        const frame = JSON.parse(data.toString()) as {
+          id: string;
+          ok: boolean;
+          payload?: { runId: string };
+        };
+        if (frame.id === "connect")
+          socket.send(
+            JSON.stringify({
+              type: "req",
+              id: "run",
+              method: "agent.run",
+              params: {
+                input: "continue",
+                session: { kind: "main", agentId: "primary" },
+              },
+            }),
+          );
+        if (frame.id === "run" && frame.ok) {
+          socket.close();
+          resolve(frame.payload!.runId);
+        }
+      });
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    release?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect((await new SqliteRunStore(database).get(runId))?.status).toBe(
+      "completed",
+    );
+    database.close();
+  });
+
   it("connects and handles health and sessions RPCs", async () => {
     const sessions = new InMemorySessionStore();
 

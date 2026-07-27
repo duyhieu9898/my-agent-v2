@@ -16,6 +16,9 @@
     "format": "prettier --write ."
   },
   "devDependencies": {
+    "@babel/eslint-parser": "^8.0.1",
+    "@babel/plugin-syntax-typescript": "^8.0.3",
+    "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.1.1",
     "@types/ws": "^8.18.1",
@@ -26,6 +29,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
+    "@google/genai": "^2.13.0",
     "ajv": "^8.20.0",
     "better-sqlite3": "^13.0.1",
     "pino": "^10.3.1",

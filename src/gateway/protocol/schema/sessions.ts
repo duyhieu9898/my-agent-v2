@@ -74,14 +74,10 @@ export const SessionsResolveParamsSchema = Type.Union([
   ),
 ]);
 
-export type SessionsResolveParams = Static<
-  typeof SessionsResolveParamsSchema
->;
+export type SessionsResolveParams = Static<typeof SessionsResolveParamsSchema>;
 
 export const SessionsResolveResultSchema = SessionEntrySchema;
-export type SessionsResolveResult = Static<
-  typeof SessionsResolveResultSchema
->;
+export type SessionsResolveResult = Static<typeof SessionsResolveResultSchema>;
 
 // sessions.list
 export const SessionsListParamsSchema = Type.Object(

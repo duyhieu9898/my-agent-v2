@@ -8,6 +8,13 @@ import {
   handleSessionsResolve,
 } from "./sessions.js";
 import type { GatewayMethodHandler } from "./types.js";
+import {
+  handleAgentRun,
+  handleRunCancel,
+  handleRunGet,
+  handleRunJournal,
+  handleSessionHistory,
+} from "./runs.js";
 
 export const gatewayMethodHandlers: Record<
   GatewayMethod,
@@ -19,4 +26,9 @@ export const gatewayMethodHandlers: Record<
   "sessions.describe": handleSessionsDescribe,
   "sessions.resolve": handleSessionsResolve,
   "sessions.list": handleSessionsList,
+  "agent.run": handleAgentRun,
+  "run.get": handleRunGet,
+  "run.cancel": handleRunCancel,
+  "session.history": handleSessionHistory,
+  "run.journal": handleRunJournal,
 };

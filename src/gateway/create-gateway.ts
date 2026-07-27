@@ -60,116 +60,101 @@ export function createGateway(options: GatewayOptions): Gateway {
           return;
         }
 
-        newWebSocketServer.handleUpgrade(
-          request,
-          socket,
-          head,
-          (webSocket) => {
-            newWebSocketServer.emit(
-              "connection",
-              webSocket,
-              request,
-            );
-          },
-        );
+        newWebSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
+          newWebSocketServer.emit("connection", webSocket, request);
+        });
       });
 
-      newWebSocketServer.on(
-        "connection",
-        (webSocket: WebSocket) => {
-          logger.info("gateway client connected");
+      newWebSocketServer.on("connection", (webSocket: WebSocket) => {
+        logger.info("gateway client connected");
 
-          const connection: GatewayConnection = {
-            socket: webSocket,
-            state: {
-              status: "connecting",
-            },
-          };
+        const connection: GatewayConnection = {
+          socket: webSocket,
+          state: {
+            status: "connecting",
+          },
+        };
 
-          webSocket.on("message", async (data) => {
-            let value: unknown;
+        webSocket.on("message", async (data) => {
+          let value: unknown;
 
-            try {
-              value = JSON.parse(data.toString());
-            } catch {
-              webSocket.send(
-                JSON.stringify({
-                  type: "res",
-                  id: "",
-                  ok: false,
-                  error: {
-                    code: "invalid_json",
-                    message: "Message must be valid JSON",
-                  },
-                }),
-              );
-
-              return;
-            }
-
-            const result = validateGatewayFrame(value);
-
-            if (!result.ok) {
-              webSocket.send(
-                JSON.stringify({
-                  type: "res",
-                  id:
-                    typeof value === "object" &&
-                    value !== null &&
-                    "id" in value &&
-                    typeof value.id === "string"
-                      ? value.id
-                      : "",
-                  ok: false,
-                  error: {
-                    code: "invalid_frame",
-                    message: "Invalid Gateway frame",
-                    details: result.errors,
-                  },
-                }),
-              );
-
-              return;
-            }
-
-            if (result.frame.type !== "req") {
-              webSocket.send(
-                JSON.stringify({
-                  type: "res",
-                  id: "id" in result.frame ? result.frame.id : "",
-                  ok: false,
-                  error: {
-                    code: "unexpected_frame",
-                    message: "Clients may only send request frames",
-                  },
-                }),
-              );
-
-              return;
-            }
-
-            const response = await dispatchRequest({
-              connection,
-              request: result.frame,
-              logger,
-              dependencies,
-            });
-
-            webSocket.send(JSON.stringify(response));
-          });
-
-          webSocket.on("close", () => {
-            logger.info("gateway client disconnected");
-          });
-
-          webSocket.on("error", (error) => {
-            logger.warn(
-              { error },
-              "gateway client socket error",
+          try {
+            value = JSON.parse(data.toString());
+          } catch {
+            webSocket.send(
+              JSON.stringify({
+                type: "res",
+                id: "",
+                ok: false,
+                error: {
+                  code: "invalid_json",
+                  message: "Message must be valid JSON",
+                },
+              }),
             );
+
+            return;
+          }
+
+          const result = validateGatewayFrame(value);
+
+          if (!result.ok) {
+            webSocket.send(
+              JSON.stringify({
+                type: "res",
+                id:
+                  typeof value === "object" &&
+                  value !== null &&
+                  "id" in value &&
+                  typeof value.id === "string"
+                    ? value.id
+                    : "",
+                ok: false,
+                error: {
+                  code: "invalid_frame",
+                  message: "Invalid Gateway frame",
+                  details: result.errors,
+                },
+              }),
+            );
+
+            return;
+          }
+
+          if (result.frame.type !== "req") {
+            webSocket.send(
+              JSON.stringify({
+                type: "res",
+                id: "id" in result.frame ? result.frame.id : "",
+                ok: false,
+                error: {
+                  code: "unexpected_frame",
+                  message: "Clients may only send request frames",
+                },
+              }),
+            );
+
+            return;
+          }
+
+          const response = await dispatchRequest({
+            connection,
+            request: result.frame,
+            logger,
+            dependencies,
           });
-        },
-      );
+
+          webSocket.send(JSON.stringify(response));
+        });
+
+        webSocket.on("close", () => {
+          logger.info("gateway client disconnected");
+        });
+
+        webSocket.on("error", (error) => {
+          logger.warn({ error }, "gateway client socket error");
+        });
+      });
 
       await new Promise<void>((resolve, reject) => {
         newServer.once("error", reject);

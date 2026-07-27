@@ -1,17 +1,9 @@
-import type {
-  CreateSessionInput,
-  SessionStore,
-} from "./session-store.js";
-import {
-  createSessionKey,
-  type SessionKeyInput,
-} from "./session-key.js";
+import type { CreateSessionInput, SessionStore } from "./session-store.js";
+import { createSessionKey, type SessionKeyInput } from "./session-key.js";
 import type { SessionEntry } from "./session-entry.js";
 
 export class SessionResolver {
-  public constructor(
-    private readonly sessions: SessionStore,
-  ) {}
+  public constructor(private readonly sessions: SessionStore) {}
 
   async resolve(input: SessionKeyInput): Promise<SessionEntry> {
     const key = createSessionKey(input);
@@ -28,5 +20,9 @@ export class SessionResolver {
     };
 
     return this.sessions.create(createInput);
+  }
+
+  async reset(input: SessionKeyInput): Promise<SessionEntry | undefined> {
+    return this.sessions.reset(createSessionKey(input));
   }
 }

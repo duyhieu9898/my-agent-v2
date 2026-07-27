@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteSessionStore } from "./sqlite-session-store.js";
 import { openDatabase, type AppDatabase } from "../storage/database.js";
 import { migrateDatabase } from "../storage/migrate.js";
+import {
+  createSequentialIdFactory,
+  FakeClock,
+} from "../test/foundation-fixtures.js";
 
 let database: AppDatabase;
 let repository: SqliteSessionStore;
@@ -64,5 +68,46 @@ describe("SqliteSessionStore", () => {
     expect(sessions.map((session) => session.key)).toEqual(
       expect.arrayContaining([first.key, second.key]),
     );
+  });
+
+  it("uses injected time and identity factories", async () => {
+    repository = new SqliteSessionStore(database, {
+      clock: new FakeClock(new Date("2026-07-24T00:00:00.000Z")),
+      ids: createSequentialIdFactory(),
+    });
+
+    const session = await repository.create({
+      key: "agent:primary:deterministic",
+      agentId: "primary",
+    });
+
+    expect(session.sessionId).toBe("00000000-0000-4000-8000-000000000001");
+    expect(session.createdAt).toBe("2026-07-24T00:00:00.000Z");
+  });
+
+  it("normalizes SQLite uniqueness failures at the storage boundary", async () => {
+    await repository.create({
+      key: "agent:primary:duplicate",
+      agentId: "primary",
+    });
+
+    await expect(
+      repository.create({
+        key: "agent:primary:duplicate",
+        agentId: "primary",
+      }),
+    ).rejects.toMatchObject({
+      code: "STORAGE_CONFLICT",
+    });
+  });
+
+  it("replaces the transcript session ID on reset", async () => {
+    const created = await repository.create({
+      key: "agent:primary:reset",
+      agentId: "primary",
+    });
+    const reset = await repository.reset(created.key);
+    expect(reset?.key).toBe(created.key);
+    expect(reset?.sessionId).not.toBe(created.sessionId);
   });
 });

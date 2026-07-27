@@ -1,12 +1,32 @@
-import type { TranscriptEntry } from "./transcript-entry.js";
+import type {
+  PersistedTranscriptEntry,
+  TranscriptAppendEntry,
+  TranscriptContinuation,
+} from "./transcript-entry.js";
+
+export type AppendTranscriptBatchInput = {
+  sessionId: string;
+  expectedTailSequence: number;
+  entries: readonly TranscriptAppendEntry[];
+};
+
+export type TranscriptPage = {
+  entries: readonly PersistedTranscriptEntry[];
+  nextCursor?: string;
+};
 
 export interface TranscriptStore {
-  append(
+  appendBatch(
+    input: AppendTranscriptBatchInput,
+  ): Promise<readonly PersistedTranscriptEntry[]>;
+
+  readPage(
     sessionId: string,
-    entry: TranscriptEntry,
-  ): Promise<void>;
+    options?: { afterSequence?: number; limit?: number; cursor?: string },
+  ): Promise<TranscriptPage>;
 
-  read(sessionId: string): Promise<TranscriptEntry[]>;
-
-  clear(sessionId: string): Promise<void>;
+  readContinuation(
+    sessionId: string,
+    sequence: number,
+  ): Promise<TranscriptContinuation | undefined>;
 }

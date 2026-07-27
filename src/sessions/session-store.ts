@@ -9,4 +9,5 @@ export interface SessionStore {
   create(input: CreateSessionInput): Promise<SessionEntry>;
   getByKey(key: string): Promise<SessionEntry | undefined>;
   list(): Promise<SessionEntry[]>;
+  reset(key: string): Promise<SessionEntry | undefined>;
 }

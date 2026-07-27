@@ -1,5 +1,11 @@
+import { existsSync } from "node:fs";
+
 import { createApp } from "./bootstrap/create-app.js";
 import { loadConfig } from "./config/load-config.js";
+
+if (existsSync(".env")) {
+  process.loadEnvFile(".env");
+}
 
 const config = loadConfig();
 const app = createApp(config);

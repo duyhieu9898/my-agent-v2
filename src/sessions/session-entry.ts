@@ -1,7 +1,9 @@
+import type { AgentId, SessionId, SessionKey } from "../core/identities.js";
+
 export type SessionEntry = {
-  key: string;
-  sessionId: string;
-  agentId: string;
+  key: SessionKey;
+  sessionId: SessionId;
+  agentId: AgentId;
   createdAt: string;
   updatedAt: string;
 };

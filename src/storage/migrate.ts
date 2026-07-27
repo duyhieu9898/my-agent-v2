@@ -1,11 +1,15 @@
 import type { AppDatabase } from "./database.js";
 import { migrations } from "./migrations/index.js";
+import type { Migration } from "./migrations/types.js";
 
 type AppliedMigrationRow = {
   version: number;
 };
 
-export function migrateDatabase(database: AppDatabase): void {
+export function migrateDatabase(
+  database: AppDatabase,
+  migrationList: readonly Migration[] = migrations,
+): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INTEGER PRIMARY KEY,
@@ -15,16 +19,16 @@ export function migrateDatabase(database: AppDatabase): void {
   `);
 
   const appliedRows = database
-    .prepare(`
+    .prepare(
+      `
       SELECT version
       FROM schema_migrations
       ORDER BY version ASC
-    `)
+    `,
+    )
     .all() as AppliedMigrationRow[];
 
-  const appliedVersions = new Set(
-    appliedRows.map((row) => row.version),
-  );
+  const appliedVersions = new Set(appliedRows.map((row) => row.version));
 
   const insertMigration = database.prepare(`
     INSERT INTO schema_migrations (
@@ -35,31 +39,21 @@ export function migrateDatabase(database: AppDatabase): void {
     VALUES (?, ?, ?)
   `);
 
-  const applyMigration = database.transaction(
-    (version: number) => {
-      const migration = migrations.find(
-        (candidate) => candidate.version === version,
-      );
+  const applyMigration = database.transaction((migration: Migration) => {
+    migration.up(database);
 
-      if (!migration) {
-        throw new Error(`Migration not found: ${version}`);
-      }
+    insertMigration.run(
+      migration.version,
+      migration.name,
+      new Date().toISOString(),
+    );
+  });
 
-      migration.up(database);
-
-      insertMigration.run(
-        migration.version,
-        migration.name,
-        new Date().toISOString(),
-      );
-    },
-  );
-
-  for (const migration of migrations) {
+  for (const migration of migrationList) {
     if (appliedVersions.has(migration.version)) {
       continue;
     }
 
-    applyMigration(migration.version);
+    applyMigration(migration);
   }
 }

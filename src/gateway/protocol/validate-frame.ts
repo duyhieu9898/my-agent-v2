@@ -2,10 +2,7 @@ import AjvModule from "ajv";
 
 const Ajv = AjvModule.default ?? AjvModule;
 
-import {
-  GatewayFrameSchema,
-  type GatewayFrame,
-} from "./schema/frames.js";
+import { GatewayFrameSchema, type GatewayFrame } from "./schema/frames.js";
 
 const ajv = new Ajv({
   allErrors: true,
@@ -25,9 +22,7 @@ export type FrameValidationResult =
       errors: string[];
     };
 
-export function validateGatewayFrame(
-  value: unknown,
-): FrameValidationResult {
+export function validateGatewayFrame(value: unknown): FrameValidationResult {
   if (validateGatewayFrameSchema(value)) {
     return {
       ok: true,
@@ -37,10 +32,9 @@ export function validateGatewayFrame(
 
   return {
     ok: false,
-    errors:
-      validateGatewayFrameSchema.errors?.map((error) => {
-        const path = error.instancePath || "/";
-        return `${path} ${error.message ?? "is invalid"}`;
-      }) ?? ["Invalid Gateway frame"],
+    errors: validateGatewayFrameSchema.errors?.map((error) => {
+      const path = error.instancePath || "/";
+      return `${path} ${error.message ?? "is invalid"}`;
+    }) ?? ["Invalid Gateway frame"],
   };
 }

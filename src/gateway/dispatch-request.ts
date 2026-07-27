@@ -1,12 +1,10 @@
 import type { Logger } from "pino";
+import { toErrorEnvelope } from "../core/errors.js";
 
 import type { GatewayConnection } from "./connection.js";
 import { gatewayMethodHandlers } from "./methods/registry.js";
 import type { GatewayMethodDependencies } from "./methods/types.js";
-import type {
-  RequestFrame,
-  ResponseFrame,
-} from "./protocol/schema/frames.js";
+import type { RequestFrame, ResponseFrame } from "./protocol/schema/frames.js";
 import {
   isGatewayMethod,
   validateMethodParams,
@@ -51,10 +49,7 @@ export async function dispatchRequest(
     };
   }
 
-  if (
-    connection.state.status === "ready" &&
-    request.method === "connect"
-  ) {
+  if (connection.state.status === "ready" && request.method === "connect") {
     return {
       type: "res",
       id: request.id,
@@ -66,10 +61,7 @@ export async function dispatchRequest(
     };
   }
 
-  const validation = validateMethodParams(
-    request.method,
-    request.params,
-  );
+  const validation = validateMethodParams(request.method, request.params);
 
   if (!validation.ok) {
     return {
@@ -84,13 +76,18 @@ export async function dispatchRequest(
     };
   }
 
-  return gatewayMethodHandlers[request.method]({
-    connection,
-    request: {
-      ...request,
-      params: validation.params,
-    },
-    logger,
-    dependencies,
-  });
+  try {
+    return await gatewayMethodHandlers[request.method]({
+      connection,
+      request: {
+        ...request,
+        params: validation.params,
+      },
+      logger,
+      dependencies,
+    });
+  } catch (error: unknown) {
+    const normalized = toErrorEnvelope(error);
+    return { type: "res", id: request.id, ok: false, error: normalized };
+  }
 }

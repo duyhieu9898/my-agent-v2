@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 
+import {
+  createAgentId,
+  createSessionId,
+  createSessionKey,
+} from "../core/identities.js";
 import type { SessionEntry } from "./session-entry.js";
 import type { CreateSessionInput, SessionStore } from "./session-store.js";
 
@@ -10,9 +15,9 @@ export class InMemorySessionStore implements SessionStore {
     const now = new Date().toISOString();
 
     const session: SessionEntry = {
-      key: input.key,
-      sessionId: randomUUID(),
-      agentId: input.agentId,
+      key: createSessionKey(input.key),
+      sessionId: createSessionId(randomUUID()),
+      agentId: createAgentId(input.agentId),
       createdAt: now,
       updatedAt: now,
     };
@@ -30,5 +35,17 @@ export class InMemorySessionStore implements SessionStore {
     return Array.from(this.sessions.values()).sort((a, b) =>
       b.updatedAt.localeCompare(a.updatedAt),
     );
+  }
+
+  async reset(key: string): Promise<SessionEntry | undefined> {
+    const session = this.sessions.get(key);
+    if (!session) return undefined;
+    const reset = {
+      ...session,
+      sessionId: createSessionId(randomUUID()),
+      updatedAt: new Date().toISOString(),
+    };
+    this.sessions.set(key, reset);
+    return reset;
   }
 }

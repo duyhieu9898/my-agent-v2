@@ -1,11 +1,5 @@
-import {
-  ConnectParamsSchema,
-  ConnectResultSchema,
-} from "./connect.js";
-import {
-  HealthParamsSchema,
-  HealthResultSchema,
-} from "./health.js";
+import { ConnectParamsSchema, ConnectResultSchema } from "./connect.js";
+import { HealthParamsSchema, HealthResultSchema } from "./health.js";
 import {
   SessionsCreateParamsSchema,
   SessionsCreateResultSchema,
@@ -16,6 +10,15 @@ import {
   SessionsResolveParamsSchema,
   SessionsResolveResultSchema,
 } from "./sessions.js";
+import {
+  AgentRunParamsSchema,
+  AgentRunResultSchema,
+  AnyResultSchema,
+  RunGetParamsSchema,
+  RunCancelParamsSchema,
+  RunJournalParamsSchema,
+  SessionHistoryParamsSchema,
+} from "./runs.js";
 
 export const GatewayMethods = {
   connect: {
@@ -47,6 +50,14 @@ export const GatewayMethods = {
     params: SessionsListParamsSchema,
     result: SessionsListResultSchema,
   },
+  "agent.run": { params: AgentRunParamsSchema, result: AgentRunResultSchema },
+  "run.get": { params: RunGetParamsSchema, result: AnyResultSchema },
+  "run.cancel": { params: RunCancelParamsSchema, result: AnyResultSchema },
+  "session.history": {
+    params: SessionHistoryParamsSchema,
+    result: AnyResultSchema,
+  },
+  "run.journal": { params: RunJournalParamsSchema, result: AnyResultSchema },
 } as const;
 
 export type GatewayMethod = keyof typeof GatewayMethods;
