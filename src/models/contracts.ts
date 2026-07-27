@@ -16,6 +16,13 @@ export type ModelRequest = Readonly<{
   modelId: "gemini-3.5-flash";
   instructions: readonly string[];
   turns: readonly Readonly<{ role: "user" | "assistant"; text: string }>[];
+  continuations?: readonly Readonly<{
+    providerId: "gemini-developer";
+    modelId: "gemini-3.5-flash";
+    modelCallId: string;
+    version: "gemini-thought-signature-v1";
+    payload: Uint8Array;
+  }>[];
 }>;
 
 export type ModelResult = Readonly<{

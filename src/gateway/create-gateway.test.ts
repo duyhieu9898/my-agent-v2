@@ -21,23 +21,318 @@ const logger = pino({
 
 let gateway: Gateway | undefined;
 
+type ReceivedFrame = Record<string, unknown>;
+
+function collectFrames(socket: WebSocket): {
+  frames: readonly ReceivedFrame[];
+  waitFor(predicate: (frame: ReceivedFrame) => boolean): Promise<ReceivedFrame>;
+} {
+  const frames: ReceivedFrame[] = [];
+  const waiters: Array<{
+    predicate: (frame: ReceivedFrame) => boolean;
+    resolve(frame: ReceivedFrame): void;
+  }> = [];
+  socket.on("message", (data) => {
+    const frame = JSON.parse(data.toString()) as ReceivedFrame;
+    frames.push(frame);
+    for (const waiter of [...waiters]) {
+      if (!waiter.predicate(frame)) continue;
+      waiters.splice(waiters.indexOf(waiter), 1);
+      waiter.resolve(frame);
+    }
+  });
+  return {
+    frames,
+    async waitFor(predicate) {
+      const existing = frames.find(predicate);
+      if (existing) return existing;
+      return new Promise<ReceivedFrame>((resolve) => {
+        waiters.push({ predicate, resolve });
+      });
+    },
+  };
+}
+
+async function connectClient(port: number): Promise<{
+  socket: WebSocket;
+  frames: ReturnType<typeof collectFrames>;
+}> {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  const frames = collectFrames(socket);
+  await new Promise<void>((resolve, reject) => {
+    socket.once("error", reject);
+    socket.once("open", resolve);
+  });
+  socket.send(
+    JSON.stringify({
+      type: "req",
+      id: "connect",
+      method: "connect",
+      params: {
+        minProtocol: 1,
+        maxProtocol: 1,
+        client: { name: "integration-test", version: "0", mode: "cli" },
+      },
+    }),
+  );
+  await frames.waitFor((frame) => frame.id === "connect" && frame.ok === true);
+  return { socket, frames };
+}
+
 afterEach(async () => {
   await gateway?.stop();
   gateway = undefined;
 });
 
 describe("Gateway WebSocket", () => {
+  it("sends admission before exactly one owner-scoped completed terminal event", async () => {
+    const database = openDatabase(":memory:");
+    migrateDatabase(database);
+    const sessions = new SqliteSessionStore(database);
+    const events = new RuntimeEventBus();
+    const runtime = new AgentRuntime({
+      sessions: new SessionResolver(sessions),
+      transcripts: new InMemoryTranscriptStore(),
+      runs: new SqliteRunStore(database),
+      journal: new SqliteRunJournalStore(database),
+      events,
+      lanes: new SessionRunLaneCoordinator(1),
+    });
+    gateway = createGateway({
+      host: "127.0.0.1",
+      port: 43212,
+      logger,
+      dependencies: {
+        sessions,
+        sessionResolver: new SessionResolver(sessions),
+        runtime,
+        runs: new SqliteRunStore(database),
+        journal: new SqliteRunJournalStore(database),
+        events,
+      },
+    });
+    await gateway.start();
+    const owner = await connectClient(43212);
+    const observer = await connectClient(43212);
+    owner.socket.send(
+      JSON.stringify({
+        type: "req",
+        id: "run",
+        method: "agent.run",
+        params: {
+          input: "hello",
+          session: { kind: "main", agentId: "primary" },
+        },
+      }),
+    );
+    const admission = await owner.frames.waitFor(
+      (frame) => frame.id === "run" && frame.ok === true,
+    );
+    const runId = (admission.payload as { runId: string }).runId;
+    const terminal = await owner.frames.waitFor(
+      (frame) =>
+        frame.type === "event" &&
+        frame.event === "run.completed" &&
+        (frame.payload as { runId?: string }).runId === runId,
+    );
+    expect(owner.frames.frames.indexOf(admission)).toBeLessThan(
+      owner.frames.frames.indexOf(terminal),
+    );
+    expect(
+      owner.frames.frames.filter(
+        (frame) =>
+          frame.type === "event" &&
+          (frame.payload as { runId?: string }).runId === runId,
+      ),
+    ).toHaveLength(1);
+    expect(
+      observer.frames.frames.some(
+        (frame) =>
+          frame.type === "event" &&
+          (frame.payload as { runId?: string }).runId === runId,
+      ),
+    ).toBe(false);
+    expect((await new SqliteRunStore(database).get(runId))?.status).toBe(
+      "completed",
+    );
+    expect(
+      (await new SqliteRunJournalStore(database).readPage(runId)).entries.some(
+        (entry) => entry.eventName === "finalize.completed",
+      ),
+    ).toBe(true);
+    owner.socket.close();
+    observer.socket.close();
+    database.close();
+  });
+
+  it("publishes one normalized failed terminal event after durable failure", async () => {
+    const database = openDatabase(":memory:");
+    migrateDatabase(database);
+    const sessions = new SqliteSessionStore(database);
+    const events = new RuntimeEventBus();
+    const runtime = new AgentRuntime({
+      sessions: new SessionResolver(sessions),
+      transcripts: {
+        readPage: async () => ({ entries: [] }),
+        readContinuation: async () => undefined,
+        appendBatch: async () => {
+          throw new Error("SUPER_SECRET_THOUGHT_SIGNATURE_DO_NOT_EXPOSE");
+        },
+      },
+      runs: new SqliteRunStore(database),
+      journal: new SqliteRunJournalStore(database),
+      events,
+      lanes: new SessionRunLaneCoordinator(1),
+    });
+    gateway = createGateway({
+      host: "127.0.0.1",
+      port: 43213,
+      logger,
+      dependencies: {
+        sessions,
+        sessionResolver: new SessionResolver(sessions),
+        runtime,
+        runs: new SqliteRunStore(database),
+        journal: new SqliteRunJournalStore(database),
+        events,
+      },
+    });
+    await gateway.start();
+    const client = await connectClient(43213);
+    client.socket.send(
+      JSON.stringify({
+        type: "req",
+        id: "run",
+        method: "agent.run",
+        params: {
+          input: "hello",
+          session: { kind: "main", agentId: "primary" },
+        },
+      }),
+    );
+    const admission = await client.frames.waitFor(
+      (frame) => frame.id === "run" && frame.ok === true,
+    );
+    const runId = (admission.payload as { runId: string }).runId;
+    const terminal = await client.frames.waitFor(
+      (frame) =>
+        frame.type === "event" &&
+        frame.event === "run.failed" &&
+        (frame.payload as { runId?: string }).runId === runId,
+    );
+    expect(JSON.stringify(terminal)).not.toContain(
+      "SUPER_SECRET_THOUGHT_SIGNATURE_DO_NOT_EXPOSE",
+    );
+    expect(
+      client.frames.frames.filter(
+        (frame) =>
+          frame.type === "event" &&
+          (frame.payload as { runId?: string }).runId === runId,
+      ),
+    ).toHaveLength(1);
+    expect((await new SqliteRunStore(database).get(runId))?.status).toBe(
+      "failed",
+    );
+    client.socket.close();
+    database.close();
+  });
+
+  it("publishes one cancelled terminal event through run.cancel", async () => {
+    const database = openDatabase(":memory:");
+    migrateDatabase(database);
+    const sessions = new SqliteSessionStore(database);
+    const events = new RuntimeEventBus();
+    const runtime = new AgentRuntime({
+      sessions: new SessionResolver(sessions),
+      transcripts: new InMemoryTranscriptStore(),
+      runs: new SqliteRunStore(database),
+      journal: new SqliteRunJournalStore(database),
+      events,
+      lanes: new SessionRunLaneCoordinator(1),
+      execute: (signal) =>
+        new Promise<void>((_resolve, reject) =>
+          signal.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          }),
+        ),
+    });
+    gateway = createGateway({
+      host: "127.0.0.1",
+      port: 43214,
+      logger,
+      dependencies: {
+        sessions,
+        sessionResolver: new SessionResolver(sessions),
+        runtime,
+        runs: new SqliteRunStore(database),
+        journal: new SqliteRunJournalStore(database),
+        events,
+      },
+    });
+    await gateway.start();
+    const client = await connectClient(43214);
+    client.socket.send(
+      JSON.stringify({
+        type: "req",
+        id: "run",
+        method: "agent.run",
+        params: {
+          input: "hello",
+          session: { kind: "main", agentId: "primary" },
+        },
+      }),
+    );
+    const admission = await client.frames.waitFor(
+      (frame) => frame.id === "run" && frame.ok === true,
+    );
+    const runId = (admission.payload as { runId: string }).runId;
+    client.socket.send(
+      JSON.stringify({
+        type: "req",
+        id: "cancel",
+        method: "run.cancel",
+        params: { runId },
+      }),
+    );
+    await client.frames.waitFor(
+      (frame) => frame.id === "cancel" && frame.ok === true,
+    );
+    await client.frames.waitFor(
+      (frame) =>
+        frame.type === "event" &&
+        frame.event === "run.cancelled" &&
+        (frame.payload as { runId?: string }).runId === runId,
+    );
+    expect(
+      client.frames.frames.filter(
+        (frame) =>
+          frame.type === "event" &&
+          (frame.payload as { runId?: string }).runId === runId,
+      ),
+    ).toHaveLength(1);
+    expect((await new SqliteRunStore(database).get(runId))?.status).toBe(
+      "cancelled",
+    );
+    client.socket.close();
+    database.close();
+  });
+
   it("does not cancel an admitted run when its client disconnects", async () => {
     const database = openDatabase(":memory:");
     migrateDatabase(database);
     const sessions = new SqliteSessionStore(database);
+    const events = new RuntimeEventBus();
+    let resolveTerminal: (() => void) | undefined;
+    const terminal = new Promise<void>((resolve) => {
+      resolveTerminal = resolve;
+    });
     let release: (() => void) | undefined;
     const runtime = new AgentRuntime({
       sessions: new SessionResolver(sessions),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),
       journal: new SqliteRunJournalStore(database),
-      events: new RuntimeEventBus(),
+      events,
       lanes: new SessionRunLaneCoordinator(1),
       execute: () =>
         new Promise<void>((resolve) => {
@@ -55,6 +350,7 @@ describe("Gateway WebSocket", () => {
         runtime,
         runs: new SqliteRunStore(database),
         journal: new SqliteRunJournalStore(database),
+        events,
       },
     });
     await gateway.start();
@@ -99,9 +395,12 @@ describe("Gateway WebSocket", () => {
         }
       });
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    events.subscribe((event) => {
+      if (event.runId === runId && event.eventName === "run.completed")
+        resolveTerminal?.();
+    });
     release?.();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await terminal;
     expect((await new SqliteRunStore(database).get(runId))?.status).toBe(
       "completed",
     );

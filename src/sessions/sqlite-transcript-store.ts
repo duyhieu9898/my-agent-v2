@@ -22,6 +22,8 @@ type TranscriptRow = {
   tool_name: string | null;
   tool_content_json: string | null;
   created_at: string;
+  continuation_required: number;
+  model_call_id: string | null;
 };
 
 function mapEntry(row: TranscriptRow): PersistedTranscriptEntry {
@@ -41,6 +43,8 @@ function mapEntry(row: TranscriptRow): PersistedTranscriptEntry {
       type: "message",
       role: row.role,
       text: row.text_content,
+      ...(row.continuation_required ? { continuationRequired: true } : {}),
+      ...(row.model_call_id ? { modelCallId: row.model_call_id } : {}),
     };
   }
 
@@ -67,6 +71,8 @@ function entryColumns(entry: TranscriptEntry): {
   toolCallId: string | null;
   toolName: string | null;
   toolContentJson: string | null;
+  continuationRequired: number;
+  modelCallId: string | null;
 } {
   if (entry.type === "message") {
     return {
@@ -77,6 +83,8 @@ function entryColumns(entry: TranscriptEntry): {
       toolCallId: null,
       toolName: null,
       toolContentJson: null,
+      continuationRequired: entry.continuationRequired ? 1 : 0,
+      modelCallId: entry.modelCallId ?? null,
     };
   }
   return {
@@ -87,6 +95,8 @@ function entryColumns(entry: TranscriptEntry): {
     toolCallId: entry.toolCallId,
     toolName: entry.toolName,
     toolContentJson: JSON.stringify(entry.content),
+    continuationRequired: 0,
+    modelCallId: null,
   };
 }
 
@@ -111,13 +121,13 @@ export class SqliteTranscriptStore implements TranscriptStore {
         const insertEntry = this.database.prepare(`
           INSERT INTO transcript_entries (
             session_id, sequence, entry_id, entry_type, parent_id, role,
-            text_content, tool_call_id, tool_name, tool_content_json, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            text_content, tool_call_id, tool_name, tool_content_json, created_at, continuation_required, model_call_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         const insertContinuation = this.database.prepare(`
           INSERT INTO transcript_continuations (
-            session_id, sequence, continuation_version, continuation_payload
-          ) VALUES (?, ?, ?, ?)
+            session_id, sequence, continuation_version, continuation_payload, provider_id, model_id, model_call_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
         `);
 
         return input.entries.map((entry, index) => {
@@ -136,6 +146,8 @@ export class SqliteTranscriptStore implements TranscriptStore {
             columns.toolName,
             columns.toolContentJson,
             entry.createdAt,
+            columns.continuationRequired,
+            columns.modelCallId,
           );
           if (continuation) {
             insertContinuation.run(
@@ -143,6 +155,9 @@ export class SqliteTranscriptStore implements TranscriptStore {
               sequence,
               continuation.version,
               continuation.payload,
+              continuation.providerId ?? null,
+              continuation.modelId ?? null,
+              continuation.modelCallId ?? null,
             );
           }
           return { ...entryWithoutContinuation, sequence };
@@ -167,7 +182,7 @@ export class SqliteTranscriptStore implements TranscriptStore {
     const rows = this.database
       .prepare(
         `SELECT sequence, entry_id, entry_type, parent_id, role, text_content,
-          tool_call_id, tool_name, tool_content_json, created_at
+          tool_call_id, tool_name, tool_content_json, created_at, continuation_required, model_call_id
          FROM transcript_entries
          WHERE session_id = ? AND sequence > ?
          ORDER BY sequence ASC LIMIT ?`,
@@ -187,14 +202,26 @@ export class SqliteTranscriptStore implements TranscriptStore {
   async readContinuation(sessionId: string, sequence: number) {
     const row = this.database
       .prepare(
-        `SELECT continuation_version, continuation_payload
+        `SELECT continuation_version, continuation_payload, provider_id, model_id, model_call_id
          FROM transcript_continuations WHERE session_id = ? AND sequence = ?`,
       )
       .get(sessionId, sequence) as
-      | { continuation_version: string; continuation_payload: Uint8Array }
+      | {
+          continuation_version: string;
+          continuation_payload: Uint8Array;
+          provider_id: string | null;
+          model_id: string | null;
+          model_call_id: string | null;
+        }
       | undefined;
     return row
-      ? { version: row.continuation_version, payload: row.continuation_payload }
+      ? {
+          version: row.continuation_version,
+          payload: row.continuation_payload,
+          ...(row.provider_id ? { providerId: row.provider_id } : {}),
+          ...(row.model_id ? { modelId: row.model_id } : {}),
+          ...(row.model_call_id ? { modelCallId: row.model_call_id } : {}),
+        }
       : undefined;
   }
 }

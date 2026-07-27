@@ -314,12 +314,23 @@ describe("dispatchRequest", () => {
     const transcripts = new InMemoryTranscriptStore();
     const runs = new SqliteRunStore(database);
     const journal = new SqliteRunJournalStore(database);
+    const events = new RuntimeEventBus();
+    const terminal = new Promise<void>((resolve) =>
+      events.subscribe((event) => {
+        if (
+          event.eventName === "run.completed" ||
+          event.eventName === "run.failed" ||
+          event.eventName === "run.cancelled"
+        )
+          resolve();
+      }),
+    );
     const runtime = new AgentRuntime({
       sessions: resolver,
       transcripts,
       runs,
       journal,
-      events: new RuntimeEventBus(),
+      events,
       lanes: new SessionRunLaneCoordinator(2),
     });
     const connection: GatewayConnection = {
@@ -355,7 +366,7 @@ describe("dispatchRequest", () => {
       ok: true,
       payload: { runId: expect.any(String) },
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await terminal;
     database.close();
   });
 });

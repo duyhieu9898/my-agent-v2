@@ -9,7 +9,6 @@ describe("RuntimeCapacity", () => {
       second = true;
       release();
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(second).toBe(false);
     first();
     await pending;

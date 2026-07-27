@@ -15,6 +15,7 @@ export class BuiltinStepHarness {
         modelId: "gemini-3.5-flash",
         instructions: input.context.instructions,
         turns: input.context.turns,
+        continuations: input.context.continuations,
       },
       input.signal,
     );

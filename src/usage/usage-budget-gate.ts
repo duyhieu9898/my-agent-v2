@@ -67,7 +67,7 @@ export class UsageBudgetGate {
         : undefined;
       for (const policy of applicable.filter((value) => value.maxTokens)) {
         const windowPrefix = windowStart(input.occurredAt, policy.window);
-        const row = this.database
+        const active = this.database
           .prepare(
             `SELECT COALESCE(SUM(CAST(reserved_tokens AS INTEGER)), 0) AS total
              FROM usage_reservations
@@ -89,12 +89,37 @@ export class UsageBudgetGate {
           ) as {
           total: number;
         };
-        if (BigInt(row.total) + input.estimatedTokens > policy.maxTokens!)
+        const settled = this.database
+          .prepare(
+            `SELECT COALESCE(SUM(CAST(COALESCE(records.provider_total_tokens,
+              CAST(COALESCE(records.input_tokens, '0') AS INTEGER) + CAST(COALESCE(records.output_tokens, '0') AS INTEGER)) AS INTEGER)), 0) AS total
+             FROM usage_reservations reservations
+             JOIN usage_records records ON records.usage_reservation_id = reservations.usage_reservation_id
+             WHERE records.outcome = 'settled'
+               AND substr(reservations.created_at, 1, ?) = ?
+               AND (? IS NULL OR reservations.agent_id = ?)
+               AND (? IS NULL OR reservations.provider_id = ?)
+               AND (? IS NULL OR reservations.model_id = ?)`,
+          )
+          .get(
+            windowPrefix.length,
+            windowPrefix,
+            policy.agentId ?? null,
+            policy.agentId ?? null,
+            policy.providerId ?? null,
+            policy.providerId ?? null,
+            policy.modelId ?? null,
+            policy.modelId ?? null,
+          ) as { total: number };
+        if (
+          BigInt(active.total) + BigInt(settled.total) + input.estimatedTokens >
+          policy.maxTokens!
+        )
           throw new AppError("USAGE_RESERVATION_FAILED", "USAGE_CAP_EXCEEDED");
       }
       for (const policy of applicable.filter((value) => value.maxCostMicros)) {
         const windowPrefix = windowStart(input.occurredAt, policy.window);
-        const row = this.database
+        const active = this.database
           .prepare(
             `SELECT COALESCE(SUM(CAST(reserved_cost_micros AS INTEGER)), 0) AS total FROM usage_reservations WHERE status IN ('reserved', 'dispatched', 'uncertain') AND substr(created_at, 1, ?) = ? AND (? IS NULL OR agent_id = ?) AND (? IS NULL OR provider_id = ?) AND (? IS NULL OR model_id = ?)`,
           )
@@ -108,8 +133,31 @@ export class UsageBudgetGate {
             policy.modelId ?? null,
             policy.modelId ?? null,
           ) as { total: number };
+        const settled = this.database
+          .prepare(
+            `SELECT COALESCE(SUM(CAST(records.cost_micros AS INTEGER)), 0) AS total
+             FROM usage_reservations reservations
+             JOIN usage_records records ON records.usage_reservation_id = reservations.usage_reservation_id
+             WHERE records.outcome = 'settled'
+               AND substr(reservations.created_at, 1, ?) = ?
+               AND (? IS NULL OR reservations.agent_id = ?)
+               AND (? IS NULL OR reservations.provider_id = ?)
+               AND (? IS NULL OR reservations.model_id = ?)`,
+          )
+          .get(
+            windowPrefix.length,
+            windowPrefix,
+            policy.agentId ?? null,
+            policy.agentId ?? null,
+            policy.providerId ?? null,
+            policy.providerId ?? null,
+            policy.modelId ?? null,
+            policy.modelId ?? null,
+          ) as { total: number };
         if (
-          BigInt(row.total) + (reservedCostMicros ?? 0n) >
+          BigInt(active.total) +
+            BigInt(settled.total) +
+            (reservedCostMicros ?? 0n) >
           policy.maxCostMicros!
         )
           throw new AppError("USAGE_RESERVATION_FAILED", "USAGE_CAP_EXCEEDED");

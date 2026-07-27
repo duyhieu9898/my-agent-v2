@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDatabase, type AppDatabase } from "./database.js";
 import { migrateDatabase } from "./migrate.js";
 import type { Migration } from "./migrations/types.js";
+import { migrations } from "./migrations/index.js";
 import { createTemporaryDatabase } from "../test/foundation-fixtures.js";
 
 let database: AppDatabase;
@@ -53,6 +54,18 @@ describe("migrateDatabase", () => {
         version: 6,
         name: "create_usage_ledger",
       },
+      {
+        version: 7,
+        name: "add_continuation_required",
+      },
+      {
+        version: 8,
+        name: "add_continuation_association",
+      },
+      {
+        version: 9,
+        name: "add_transcript_model_call_association",
+      },
     ]);
   });
 
@@ -71,7 +84,7 @@ describe("migrateDatabase", () => {
       count: number;
     };
 
-    expect(row.count).toBe(6);
+    expect(row.count).toBe(9);
   });
 
   it("rolls back a failed migration and does not record it", () => {
@@ -119,6 +132,49 @@ describe("migrateDatabase", () => {
     reopenedDatabase.close();
     temporaryDatabase.close();
 
-    expect(count.count).toBe(6);
+    expect(count.count).toBe(9);
+  });
+
+  it("upgrades a version 7 database with continuation association columns", () => {
+    migrateDatabase(
+      database,
+      migrations.filter((migration) => migration.version <= 7),
+    );
+    migrateDatabase(database);
+    const columns = database
+      .prepare("PRAGMA table_info(transcript_continuations)")
+      .all() as Array<{ name: string }>;
+    const indexes = database
+      .prepare("PRAGMA index_list(transcript_continuations)")
+      .all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toEqual(
+      expect.arrayContaining(["provider_id", "model_id", "model_call_id"]),
+    );
+    expect(indexes.map((index) => index.name)).toContain(
+      "transcript_continuations_association_idx",
+    );
+  });
+
+  it("upgrades a version 8 database with transcript model-call association", () => {
+    migrateDatabase(
+      database,
+      migrations.filter((migration) => migration.version <= 8),
+    );
+    migrateDatabase(database);
+    const columns = database
+      .prepare("PRAGMA table_info(transcript_entries)")
+      .all() as Array<{ name: string; notnull: number }>;
+    const indexes = database
+      .prepare("PRAGMA index_list(transcript_entries)")
+      .all() as Array<{ name: string }>;
+
+    expect(columns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "model_call_id", notnull: 0 }),
+      ]),
+    );
+    expect(indexes.map((index) => index.name)).toContain(
+      "transcript_entries_model_call_idx",
+    );
   });
 });

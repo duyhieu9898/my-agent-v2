@@ -6,6 +6,8 @@ export type TranscriptEntry =
       role: "user" | "assistant";
       text: string;
       createdAt: string;
+      continuationRequired?: boolean;
+      modelCallId?: string;
     }
   | {
       type: "tool-result";
@@ -24,6 +26,9 @@ export type PersistedTranscriptEntry = TranscriptEntry & {
 export type TranscriptContinuation = {
   version: string;
   payload: Uint8Array;
+  providerId?: string;
+  modelId?: string;
+  modelCallId?: string;
 };
 
 export type TranscriptAppendEntry = TranscriptEntry & {

@@ -6,13 +6,18 @@ describe("SessionRunLaneCoordinator", () => {
     const events: string[] = [];
     const first = lane.reserve("primary:main");
     const second = lane.reserve("primary:main");
+    let resolveSecond: (() => void) | undefined;
+    const secondDone = new Promise<void>((resolve) => {
+      resolveSecond = resolve;
+    });
     first.enqueue(async () => {
       events.push("first");
     });
     second.enqueue(async () => {
       events.push("second");
+      resolveSecond?.();
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await secondDone;
     expect(events).toEqual(["first", "second"]);
   });
   it("rejects before enqueue when full", () => {
@@ -26,12 +31,17 @@ describe("SessionRunLaneCoordinator", () => {
   it("keeps three same-session runs in arrival order", async () => {
     const lane = new SessionRunLaneCoordinator(3);
     const observed: number[] = [];
+    let resolveThird: (() => void) | undefined;
+    const thirdDone = new Promise<void>((resolve) => {
+      resolveThird = resolve;
+    });
     for (const value of [1, 2, 3]) {
       lane.reserve("primary:main").enqueue(async () => {
         observed.push(value);
+        if (value === 3) resolveThird?.();
       });
     }
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await thirdDone;
     expect(observed).toEqual([1, 2, 3]);
   });
 });

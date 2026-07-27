@@ -10,6 +10,7 @@ import { AgentRuntime } from "../agents/agent-runtime.js";
 import { SqliteAttemptStore } from "../agents/attempt-store.js";
 import { SqliteRunJournalStore } from "../agents/run-journal-store.js";
 import { SqliteRunStore } from "../agents/run-store.js";
+import { StartupRunReconciler } from "../agents/startup-run-reconciler.js";
 import { RuntimeEventBus } from "../agents/runtime-events.js";
 import { RuntimeCapacity } from "../agents/runtime-capacity.js";
 import { SessionRunLaneCoordinator } from "../agents/session-run-lane.js";
@@ -73,7 +74,7 @@ export function createApp(config: AppConfig): App {
       outputMicrosPerMillionTokens: price.outputMicrosPerMillionTokens,
     })),
   );
-  void usageBudgetGate.recoverInterrupted(new Date().toISOString());
+  const startupReconciler = new StartupRunReconciler(runs, usageBudgetGate);
   const geminiApiKey =
     process.env[config.agent.model.geminiApiKeyEnvironmentVariable];
   if (config.nodeEnv !== "test" && !geminiApiKey)
@@ -81,6 +82,7 @@ export function createApp(config: AppConfig): App {
       `Missing Gemini credential: ${config.agent.model.geminiApiKeyEnvironmentVariable}`,
     );
   const journal = new SqliteRunJournalStore(database);
+  const events = new RuntimeEventBus();
   const runtime = new AgentRuntime({
     sessions: sessionResolver,
     transcripts,
@@ -91,7 +93,7 @@ export function createApp(config: AppConfig): App {
       ? { provider: new GeminiInteractionsProvider(geminiApiKey) }
       : {}),
     journal,
-    events: new RuntimeEventBus(),
+    events,
     lanes: new SessionRunLaneCoordinator(
       config.runtime.perSessionQueueCapacity,
     ),
@@ -108,6 +110,7 @@ export function createApp(config: AppConfig): App {
       sessionResolver,
       transcripts,
       runtime,
+      events,
       runs,
       journal,
     },
@@ -118,6 +121,9 @@ export function createApp(config: AppConfig): App {
     logger,
 
     async start(): Promise<void> {
+      await startupReconciler.reconcileInterruptedRuns(
+        new Date().toISOString(),
+      );
       await gateway.start();
 
       logger.info(

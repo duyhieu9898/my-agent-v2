@@ -7,6 +7,7 @@ import { validateGatewayFrame } from "./protocol/validate-frame.js";
 import type { GatewayConnection } from "./connection.js";
 import { dispatchRequest } from "./dispatch-request.js";
 import type { GatewayMethodDependencies } from "./methods/types.js";
+import { toGatewayRuntimeEvent } from "./runtime-event-translation.js";
 
 export type GatewayOptions = {
   host: string;
@@ -25,6 +26,32 @@ export function createGateway(options: GatewayOptions): Gateway {
 
   let server: Server | undefined;
   let webSocketServer: WebSocketServer | undefined;
+  const eventSequences = new WeakMap<WebSocket, number>();
+  const runOwners = new Map<string, WebSocket>();
+  const pendingRunEvents = new Map<
+    string,
+    ReturnType<typeof toGatewayRuntimeEvent>[]
+  >();
+  const sendRuntimeEvent = (
+    socket: WebSocket,
+    event: Parameters<typeof toGatewayRuntimeEvent>[0],
+  ) => {
+    if (socket.readyState !== socket.OPEN) return;
+    const sequence = (eventSequences.get(socket) ?? 0) + 1;
+    eventSequences.set(socket, sequence);
+    socket.send(JSON.stringify(toGatewayRuntimeEvent(event, sequence)));
+  };
+  const unsubscribe = dependencies.events?.subscribe((event) => {
+    if (!event.runId) return;
+    const owner = runOwners.get(event.runId);
+    if (owner) {
+      sendRuntimeEvent(owner, event);
+      return;
+    }
+    const buffered = pendingRunEvents.get(event.runId) ?? [];
+    buffered.push(toGatewayRuntimeEvent(event, 0));
+    pendingRunEvents.set(event.runId, buffered);
+  });
 
   return {
     async start(): Promise<void> {
@@ -74,6 +101,7 @@ export function createGateway(options: GatewayOptions): Gateway {
             status: "connecting",
           },
         };
+        eventSequences.set(webSocket, 0);
 
         webSocket.on("message", async (data) => {
           let value: unknown;
@@ -145,9 +173,31 @@ export function createGateway(options: GatewayOptions): Gateway {
           });
 
           webSocket.send(JSON.stringify(response));
+          if (
+            result.frame.method === "agent.run" &&
+            response.ok &&
+            typeof response.payload === "object" &&
+            response.payload !== null &&
+            "runId" in response.payload &&
+            typeof response.payload.runId === "string"
+          ) {
+            const runId = response.payload.runId;
+            runOwners.set(runId, webSocket);
+            const buffered = pendingRunEvents.get(runId) ?? [];
+            pendingRunEvents.delete(runId);
+            for (const event of buffered) {
+              if (webSocket.readyState !== webSocket.OPEN) break;
+              const sequence = (eventSequences.get(webSocket) ?? 0) + 1;
+              eventSequences.set(webSocket, sequence);
+              webSocket.send(JSON.stringify({ ...event, seq: sequence }));
+            }
+          }
         });
 
         webSocket.on("close", () => {
+          for (const [runId, owner] of runOwners) {
+            if (owner === webSocket) runOwners.delete(runId);
+          }
           logger.info("gateway client disconnected");
         });
 
@@ -207,6 +257,7 @@ export function createGateway(options: GatewayOptions): Gateway {
       }
 
       logger.info("gateway stopped");
+      unsubscribe?.();
     },
   };
 }

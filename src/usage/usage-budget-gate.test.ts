@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDatabase, type AppDatabase } from "../storage/database.js";
 import { migrateDatabase } from "../storage/migrate.js";
+import { createTemporaryDatabase } from "../test/foundation-fixtures.js";
 import { UsageBudgetGate } from "./usage-budget-gate.js";
 
 let database: AppDatabase;
@@ -37,7 +38,9 @@ describe("UsageBudgetGate", () => {
       { providerTotalTokens: 7n, measurement: "provider-exact" },
       input("x").occurredAt,
     );
-    await expect(gate.reserve(input("call-2"))).resolves.toBeDefined();
+    await expect(gate.reserve(input("call-2"))).rejects.toMatchObject({
+      code: "USAGE_RESERVATION_FAILED",
+    });
   });
   it("persists a derived integer cost and immutable price revision", async () => {
     const gate = new UsageBudgetGate(
@@ -100,6 +103,74 @@ describe("UsageBudgetGate", () => {
     await expect(gate.reserve(input("call-2"))).rejects.toMatchObject({
       code: "USAGE_RESERVATION_FAILED",
     });
+  });
+  it("counts multiple settled calls and active reservations without double counting", async () => {
+    const gate = new UsageBudgetGate(
+      database,
+      [{ id: "day", window: "day", maxTokens: 30n, enabled: true }],
+      [],
+    );
+    const first = await gate.reserve(input("call-1"));
+    await gate.markDispatched(first.usageReservationId, input("x").occurredAt);
+    await gate.settle(
+      first,
+      { providerTotalTokens: 7n, measurement: "provider-exact" },
+      input("x").occurredAt,
+    );
+    const second = await gate.reserve(input("call-2"));
+    await gate.markDispatched(second.usageReservationId, input("x").occurredAt);
+    await gate.settle(
+      second,
+      { providerTotalTokens: 8n, measurement: "provider-exact" },
+      input("x").occurredAt,
+    );
+    await gate.reserve(input("call-3"));
+    await expect(gate.reserve(input("call-4"))).rejects.toMatchObject({
+      code: "USAGE_RESERVATION_FAILED",
+    });
+  });
+  it("retains uncertain usage and releases proven-undispatched headroom", async () => {
+    const gate = new UsageBudgetGate(
+      database,
+      [{ id: "day", window: "day", maxTokens: 10n, enabled: true }],
+      [],
+    );
+    const released = await gate.reserve(input("released"));
+    await gate.release(released, input("x").occurredAt);
+    const uncertain = await gate.reserve(input("uncertain"));
+    await gate.markDispatched(
+      uncertain.usageReservationId,
+      input("x").occurredAt,
+    );
+    await gate.markUncertain(uncertain, input("x").occurredAt);
+    await expect(gate.reserve(input("blocked"))).rejects.toMatchObject({
+      code: "USAGE_RESERVATION_FAILED",
+    });
+  });
+  it("keeps an ambiguous dispatched reservation in cap headroom after reopen", async () => {
+    const temporary = createTemporaryDatabase();
+    migrateDatabase(temporary.database);
+    const policy = [
+      { id: "day", window: "day" as const, maxTokens: 10n, enabled: true },
+    ];
+    const beforeRestart = new UsageBudgetGate(temporary.database, policy, []);
+    const reservation = await beforeRestart.reserve(input("ambiguous"));
+    await beforeRestart.markDispatched(
+      reservation.usageReservationId,
+      input("x").occurredAt,
+    );
+    await beforeRestart.markUncertain(reservation, input("x").occurredAt);
+    temporary.database.close();
+    const reopened = openDatabase(temporary.path);
+    migrateDatabase(reopened);
+    const afterRestart = new UsageBudgetGate(reopened, policy, []);
+    await expect(
+      afterRestart.reserve(input("blocked-after-reopen")),
+    ).rejects.toMatchObject({
+      code: "USAGE_RESERVATION_FAILED",
+    });
+    reopened.close();
+    temporary.close();
   });
   it("applies cap totals only within the policy scope and UTC window", async () => {
     const gate = new UsageBudgetGate(

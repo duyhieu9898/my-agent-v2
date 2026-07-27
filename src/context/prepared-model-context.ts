@@ -29,11 +29,19 @@ export type PreparedModelContext = Readonly<{
     profile: "main-v1";
     sections: readonly ("instructions" | "history" | "current-input")[];
   }>;
+  continuations: readonly Readonly<{
+    providerId: "gemini-developer";
+    modelId: "gemini-3.5-flash";
+    modelCallId: string;
+    version: "gemini-thought-signature-v1";
+    payload: Uint8Array;
+  }>[];
 }>;
 
 export function prepareModelContext(input: {
   history: readonly PersistedTranscriptEntry[];
   input: string;
+  continuations?: PreparedModelContext["continuations"];
 }): PreparedModelContext {
   try {
     validateCompleteExchangeGroups(input.history);
@@ -93,6 +101,7 @@ export function prepareModelContext(input: {
         "current-input" as const,
       ]),
     }),
+    continuations: Object.freeze([...(input.continuations ?? [])]),
   });
 }
 function source(

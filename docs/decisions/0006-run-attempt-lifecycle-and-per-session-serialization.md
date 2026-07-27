@@ -92,16 +92,16 @@ Agent Runtime owns the stage sequence and transitions. A stage receives an immut
 
 The V1 stage responsibilities are:
 
-| Stage | Responsibility |
-|---|---|
-| `RunSetupStage` | Establish run context after lane acquisition, append input once, and initialize traceable state |
-| `AttemptSetupStage` | Create `attemptId`, resolve coherent model/harness/tool snapshots, and prepare attempt-local state |
-| `ContextStage` | Load sources, reconstruct structural history, apply deterministic context pruning and token-budget validation, and assemble provider-neutral context plus required provider continuation |
-| `ModelStage` | Obtain a durable usage reservation, mark dispatch, execute one normalized model step through the selected Harness and Model Runtime, and settle/release/mark uncertain before returning |
-| `ToolStage` | Validate, authorize, approve, schedule, and execute requested tools through Tool Runtime |
-| `ObserveStage` | Normalize model/tool observations, compute transcript or state deltas, and emit progress signals |
-| `CheckpointStage` | Evaluate all exit, continuation, cancellation, retry, and budget conditions |
-| `FinalizeStage` | Commit required terminal state, evidence, summaries, cleanup, and the terminal result |
+| Stage               | Responsibility                                                                                                                                                                           |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RunSetupStage`     | Establish run context after lane acquisition, append input once, and initialize traceable state                                                                                          |
+| `AttemptSetupStage` | Create `attemptId`, resolve coherent model/harness/tool snapshots, and prepare attempt-local state                                                                                       |
+| `ContextStage`      | Load sources, reconstruct structural history, apply deterministic context pruning and token-budget validation, and assemble provider-neutral context plus required provider continuation |
+| `ModelStage`        | Obtain a durable usage reservation, mark dispatch, execute one normalized model step through the selected Harness and Model Runtime, and settle/release/mark uncertain before returning  |
+| `ToolStage`         | Validate, authorize, approve, schedule, and execute requested tools through Tool Runtime                                                                                                 |
+| `ObserveStage`      | Normalize model/tool observations, compute transcript or state deltas, and emit progress signals                                                                                         |
+| `CheckpointStage`   | Evaluate all exit, continuation, cancellation, retry, and budget conditions                                                                                                              |
+| `FinalizeStage`     | Commit required terminal state, evidence, summaries, cleanup, and the terminal result                                                                                                    |
 
 V1 uses a fixed pipeline rather than dynamically registered stage plugins. Hooks may observe or contribute typed signals only within their declared authority; they must not reorder stages or privately continue the loop.
 
@@ -615,6 +615,23 @@ Gateway or process restart may lose:
 The Run Journal may retain evidence written before the crash. That evidence can show the last observed durable phase, but it must not be interpreted as a resumable scheduler record or proof that an unrecorded action did not occur.
 
 V1 does not claim automatic resumption or exactly-once run execution across process crashes.
+
+### Startup fail-closed reconciliation
+
+V1 does not resume, replay, retry, or continue an interrupted run after a
+process restart. It may, however, perform one narrow startup cleanup before
+Gateway admission opens: every durable `queued` or `running` run left by a
+previous process is atomically marked `failed` with `RUN_INTERRUPTED`; any
+active attempt is marked failed in the same SQLite transaction; and a sanitized
+`run.reconciled` journal record is appended in that transaction. This is a
+terminal-state repair, not execution recovery: it does not call a provider,
+replay transcript content, create an attempt, or synthesize continuation work.
+
+The same startup pass releases only usage reservations durably proven never
+dispatched, marks dispatched reservations uncertain, and leaves settled usage
+unchanged. If reconciliation cannot commit, startup fails before Gateway begins
+accepting work. Re-running after a successful repair is idempotent and creates
+no additional terminal transition or journal entry.
 
 After restart, incomplete work must not be presented as a completed run merely because partial transcript entries or streamed output exist.
 

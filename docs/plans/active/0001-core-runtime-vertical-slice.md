@@ -1,6 +1,6 @@
 # Active Plan 0001: Core Runtime Vertical Slice
 
-**Status:** Active — Milestone 2 deterministic complete; live Gemini verification pending credential
+**Status:** Active — M1B PARTIAL; M2 deterministic PARTIAL; M2 live NOT RUN pending independent review
 **Scope:** Milestones 0–2
 **Target outcome:** One durable Gateway-to-Gemini conversation round trip, followed by a coherent second round after restart
 **Architecture authority:** `docs/ARCHITECTURE.md`; ADR 0001–0010 and 0015
@@ -295,7 +295,7 @@ run.journal
 
 ## 10. Phase D — Agent snapshot, context, Gemini, and usage (Milestone 2)
 
-### D1. Agent registry and immutable snapshot
+### D1. Agent registry and immutable snapshot — implementation evidence pending independent review
 
 - [ ] Implement `AgentDefinition` and registry contracts under `src/agents/`.
 - [ ] Compose one default definition `primary` in bootstrap.
@@ -305,7 +305,7 @@ run.journal
 - [ ] Set exact route to built-in harness, Gemini Developer API, model `gemini-3.5-flash`, and profile `main-v1`.
 - [ ] Keep credentials and mutable store handles out of the snapshot.
 
-### D2. Minimum context pipeline
+### D2. Minimum context pipeline — implementation evidence pending independent review
 
 - [ ] Implement typed source resolution from the snapshot, canonical transcript, and current run input.
 - [ ] Build `ContextManifest` with source IDs, roles, hashes, provenance, size, and transformation metadata.
@@ -316,14 +316,14 @@ run.journal
 - [ ] Add a versioned local token estimate; exact provider counting may be invoked only through the model-route contract near configured pressure.
 - [ ] With no tools/memory active, ensure their absence is explicit and not represented as implemented capability.
 
-### D3. Harness and model contracts
+### D3. Harness and model contracts — implementation evidence pending independent review
 
 - [ ] Implement a Harness Registry and register one built-in step harness.
 - [ ] Define normalized model request/result/stream/usage/error contracts under `src/models/`.
 - [ ] Ensure `src/agents/` and `src/context/` do not import `@google/genai` types.
 - [ ] Ensure one harness execution returns one step outcome and cannot privately start a second model cycle.
 
-### D4. Gemini provider
+### D4. Gemini provider — implementation evidence pending independent review
 
 - [ ] Add official `@google/genai` dependency using repository conventions.
 - [ ] Implement Gemini Developer API credential resolution in backend-only code.
@@ -335,7 +335,7 @@ run.journal
 - [ ] Preserve required typed steps/thought signatures as opaque provider-owned sidecars with version/association validation.
 - [ ] Fail `MODEL_HISTORY_INCOMPATIBLE` if required continuation is missing or malformed; do not silently collapse history.
 
-### D5. Usage Runtime
+### D5. Usage Runtime — implementation evidence pending independent review
 
 - [ ] Implement price-catalog records with immutable revision/effective time.
 - [ ] Implement global/agent/provider/model policy matching and UTC day/month windows.
@@ -350,7 +350,7 @@ run.journal
 - [ ] Record cost as unknown rather than zero when no price applies and no cost cap requires it.
 - [ ] Block with `USAGE_PRICING_UNKNOWN` when an active cost cap cannot be evaluated.
 
-### D6. ModelStage, checkpoint, and finalization integration
+### D6. ModelStage, checkpoint, and finalization integration — implementation evidence pending independent review
 
 - [ ] Create `modelCallId` before reservation.
 - [ ] Journal reservation request and decision.
@@ -361,7 +361,7 @@ run.journal
 - [ ] Commit final assistant output and required continuation in an atomic transcript batch.
 - [ ] Run `FinalizeStage` once and publish terminal Gateway output after required commits.
 
-### D7. Recovery behavior
+### D7. Recovery behavior — implementation evidence pending independent review
 
 - [ ] On startup, release only reservations proven never dispatched.
 - [ ] Preserve unresolved dispatched reservations as uncertain/recovery-required.
@@ -389,16 +389,16 @@ Using fake provider and storage fault injection:
 
 Run only when explicitly enabled with a valid host-side Gemini key:
 
-- [x] Start with a fresh persistent database.
-- [x] Connect through the real Gateway handshake.
-- [x] Submit one prompt to `primary`.
-- [x] Observe run/stage/model/terminal events.
-- [x] Read the committed transcript and journal through application/Gateway APIs.
-- [x] Verify usage ledger settlement and model/price/policy revisions.
-- [x] Stop and restart the process.
-- [x] Read the same history/journal/usage records.
-- [x] Submit a second prompt in the same logical session.
-- [x] Verify local transcript projection and required continuation produce a coherent reply without provider-hosted session state.
+- [ ] Start with a fresh persistent database.
+- [ ] Connect through the real Gateway handshake.
+- [ ] Submit one prompt to `primary`.
+- [ ] Observe run/stage/model/terminal events.
+- [ ] Read the committed transcript and journal through application/Gateway APIs.
+- [ ] Verify usage ledger settlement and model/price/policy revisions.
+- [ ] Stop and restart the process.
+- [ ] Read the same history/journal/usage records.
+- [ ] Submit a second prompt in the same logical session.
+- [ ] Verify local transcript projection and required continuation produce a coherent reply without provider-hosted session state.
 
 ## 11. Schema and migration checklist
 
@@ -508,7 +508,7 @@ Commands:
 ./node_modules/.bin/vitest run
 
 Result:
-Milestone 2 deterministic passed: direct validation passed 24 files / 97 tests, ESLint, TypeScript build, and `git diff --check`. Migration 006 adds the Usage Ledger. Fake-provider and storage fault injection cover successful execution, rejection/rate-limit, timeout/cancellation, final transcript/journal failures, reserve/cost-cap/pricing blocks, settlement failure without replay, missing/malformed continuation, SQLite reopen second-turn reconstruction, and exactly-once terminal journal evidence. `pnpm` command wrappers currently fail because the package manager requires explicit approval of ignored builds for @google/genai/protobufjs; no scripts were approved implicitly. The host has no `GEMINI_API_KEY`, so the explicitly authorized live gate cannot start yet.
+Historical result superseded by remediation evidence below. The deterministic gate remains PARTIAL until native continuation reconstruction/projection and all deterministic terminal-publication/concurrency evidence are complete.
 ```
 
 ### Milestone 2 live Gemini
@@ -518,7 +518,7 @@ Command and explicit opt-in configuration:
 `GEMINI_API_KEY` loaded from ignored local `.env`; `NODE_ENV=production`, fresh temporary SQLite, and real Gateway on localhost.
 
 Result:
-Passed 2026-07-27. Real WebSocket Gateway handshake admitted run `c0fc5de3-ebb6-49e5-8ca4-99b24b14eb38`; Gemini `gemini-3.5-flash` returned `live gate ok`; history and Run Journal were read through Gateway. After process restart on the same SQLite database, run `e3bafd75-00e7-4ae3-b2fc-76d78d66ff80` preserved the same sessionId and returned the prior phrase solely from local transcript context. A final post-projection run `5ef87f02-a5a0-4c7a-9467-6aeceacee8ea` journaled `run.accepted`, `usage.reserved`, `model.completed`, and `finalize.completed`. Usage records settled for all live calls (configured price catalog absent, so cost measurement is `unknown`). The temporary live process was stopped; its SQLite directory remains under `/tmp/my-agent-live-a2qWO4` for operator inspection because sandbox policy rejected deletion.
+NOT RUN during the current remediation. Historical live narrative is not current executable evidence for this working tree.
 ```
 
 ### Migrations added
@@ -526,6 +526,44 @@ Passed 2026-07-27. Real WebSocket Gateway handshake admitted run `c0fc5de3-ebb6-
 ```text
 006-create-usage-ledger
 ```
+
+### Lifecycle/timer remediation (2026-07-27)
+
+`src/agents/agent-runtime.test.ts` has one shared `assertTerminalTrace` helper
+over `RuntimeLifecycleProbe` markers and synchronous `RuntimeEventBus` delivery.
+It asserts exactly one admission marker, checkpoint decision, finalizer start and
+completion, durable terminal commit, and terminal event; it also asserts
+checkpoint-before-finalize and durable-commit-before-terminal-event, with no
+second terminal event. The table-driven executable matrix covers: success;
+queued and active cancellation; usage reservation block; provider pre-billable
+rejection; post-dispatch disconnect; malformed provider response; continuation
+incompatibility; transcript append failure; required journal failure; usage
+settlement failure; and cleanup/finalization journal failure. Each row records
+decision, durable status, terminal event, and provider-call count; all are
+accepted lifecycles in the current runtime contract.
+
+Ordering sleeps were removed from `agent-runtime.test.ts` and
+`dispatch-request.test.ts`. Runtime tests now use terminal-event promises,
+provider-entry deferred barriers, lane release, and lifecycle markers. The
+Gateway dispatcher test uses its terminal RuntimeEventBus promise before closing
+the database. The targeted timer audit has no `setTimeout`, `sleep`, or polling
+ordering waits. `waitFor` remains as an event-driven Gateway-frame helper;
+production timeout behavior is proved by the runtime's `runTimeoutMs` cases
+completing via terminal events.
+
+Validation completed: `vitest run src/agents/agent-runtime.test.ts` (54 tests),
+`vitest run src/gateway/dispatch-request.test.ts` (10),
+`vitest run src/gateway/create-gateway.test.ts` (5), `tsc --noEmit`, `eslint .`,
+full `vitest run` (25 files / 140 tests), `git diff --check`, timer audit, and
+changed-file Prettier check. This historical validation snapshot is superseded
+by the current remediation evidence below.
+
+D1–D7 have implementation evidence but remain pending independent review.
+Milestone 2 deterministic is PARTIAL. M2 live remains NOT RUN.
+The base/current Prettier input set was verified from `git diff --name-only
+176ca1c`; it currently contains 26 tracked paths, while the working tree also
+contains four untracked implementation paths. This is the actual command input,
+not an inferred 27-file list.
 
 ### Key observable evidence
 
@@ -540,7 +578,7 @@ Run Journal terminal sequence:
 _pending_
 
 usage reservation/record IDs:
-_pending_
+Deterministic `UsageBudgetGate` tests use `call-1` through `call-4`; settled records are joined by `usage_reservation_id` during the same reserve transaction.
 
 restart verification:
 _pending_
@@ -552,21 +590,197 @@ Do not move this plan to `docs/plans/completed/` until every item is true.
 
 - [x] Milestone 0 gate passes.
 - [x] Milestone 1A gate passes.
-- [x] Milestone 1B gate passes.
-- [x] Milestone 2 deterministic gate passes.
-- [x] Milestone 2 live gate passes, or the repository explicitly classifies it as operator verification and records why CI cannot execute it.
+- [ ] Milestone 1B gate passes.
+- [ ] Milestone 2 deterministic gate passes.
+- [ ] Milestone 2 live gate passes, or the repository explicitly classifies it as operator verification and records why CI cannot execute it.
 - [ ] All changed externally observable behavior is backed by existing architecture/ADR authority.
 - [ ] Architecture “Current repository foundation” is updated only to describe behavior actually implemented and tested.
 - [ ] No deferred capability is represented as implemented.
-- [x] Validation evidence is complete and reproducible.
+- [ ] Validation evidence is complete and reproducible.
 - [ ] Remaining risks and follow-up work are recorded below.
 
 ## 16. Remaining risks and follow-up
 
-Completed 2026-07-27. No deferred capability was represented as implemented; the next plan remains Tool Runtime, policy, approval, and safe tools.
+Current remediation keeps this plan Active. M2 deterministic remains PARTIAL pending native continuation reconstruction/projection and complete deterministic terminal-publication/concurrency evidence.
+
+### Current remediation status (authoritative)
+
+M0 is **PASS**. M1A is **PASS**. M1B is **PARTIAL** pending independent
+review. M2 deterministic is **PARTIAL** pending independent review. M2 live is
+**NOT RUN**.
+
+Terminal persistence uses one SQLite transaction for attempt/run terminal state.
+Checkpoint creates an immutable primary plan and failed fallback plan; Finalize
+may retry the primary once without a timer, then executes only that authored
+fallback. If neither durable plan can commit because storage is unavailable, no
+terminal event is fabricated; `run.infrastructure_failed` surfaces the fatal
+infrastructure condition while durable state remains unmodified. The next
+successful process startup performs fail-closed reconciliation before Gateway
+admission: it atomically fails each persisted queued/running run and active
+attempt with `RUN_INTERRUPTED`, appends sanitized `run.reconciled` evidence, and
+never resumes, replays, retries, or continues the old provider work.
+The implementation records evidence only; a subsequent independent reviewer
+decides whether any checkpoint-commit gate is met.
+
+Timer audit: there are no `setTimeout`, `sleep`, or polling ordering waits in
+the targeted tests. `waitFor` remains only as an event-driven WebSocket-frame
+helper in `src/gateway/create-gateway.test.ts`.
+
+Prettier baseline procedure: enumerate base paths with
+`git ls-tree -r --name-only 176ca1c`, pipe each `git show 176ca1c:<path>` to
+`prettier --check --stdin-filepath <path>`, then run `prettier --check .` in
+the current tree. The exact base and current failure sets are identical:
 
 ```text
-Live verification uses operator-supplied GEMINI_API_KEY and therefore remains a manual operational check, despite passing in this workspace.
+.agents/skills/audit-onboarding-proposal/SKILL.md
+.agents/skills/onboard-repository/SKILL.md
+.agents/skills/onboard-repository/references/evidence-capsule-v1.md
+.agents/skills/onboard-repository/references/evidence-capsule-v2.md
+.harness-core/base/.agents/skills/audit-onboarding-proposal/SKILL.md
+.harness-core/base/.agents/skills/onboard-repository/SKILL.md
+.harness-core/base/.agents/skills/onboard-repository/references/evidence-capsule-v1.md
+.harness-core/base/.agents/skills/onboard-repository/references/evidence-capsule-v2.md
+.harness-core/base/AGENTS.md
+.harness-core/base/docs/templates/decision.md
+.harness-core/manifest.json
+AGENTS.md
+docs/ARCHITECTURE.md
+docs/IMPLEMENTATION_PLAN.md
+docs/decisions/0002-core-runtime-identities-and-agent-ownership.md
+docs/decisions/0005-agent-runtime-harness-and-model-provider-boundaries.md
+docs/decisions/0006-run-attempt-lifecycle-and-per-session-serialization.md
+docs/decisions/0007-context-assembly-and-transcript-mutation-authority.md
+docs/decisions/0010-runtime-events-logs-transcripts-and-audit-separation.md
+docs/decisions/0013-control-ui-and-session-presentation-surfaces.md
+docs/decisions/0014-memory-ownership-retrieval-and-evolution.md
+docs/decisions/0015-usage-accounting-and-cumulative-budget-enforcement.md
+docs/decisions/README.md
+docs/templates/decision.md
+pnpm-lock.yaml
+pnpm-workspace.yaml
+```
+
+Set difference is empty: added failures none; changed tracked failures none;
+untracked failures none when the changed-plus-untracked set is checked directly.
+
+Deferred P2: `src/test/import-boundaries.test.ts` is regex-based and does not
+cover dynamic import, require, export-from, aliases, or path-resolution
+variants. A future task should replace it with TypeScript compiler/module
+resolver analysis; this remediation does not claim that enforcement is complete.
+
+Historical remediation validation evidence is superseded by the current
+startup-reconciliation validation below. The full-repository Prettier baseline
+remains the identical 27-file failure set above; changed-plus-untracked
+Prettier is checked separately. No live Gemini call was run.
+
+### Startup fail-closed reconciliation remediation (current working tree)
+
+`StartupRunReconciler` runs after migrations/storage initialization and before
+`gateway.start()`. It scans durable queued/running runs, atomically marks each
+run and any running attempt `failed` with `RUN_INTERRUPTED`, and appends one
+sanitized `run.reconciled` journal entry (`process-restart`, `failed`,
+`RUN_INTERRUPTED`) in the same SQLite transaction. It does not resume or replay
+provider work, transcript content, attempts, or continuations. Usage recovery
+releases only proven-undispatched reservations; dispatched reservations become
+uncertain and settled reservations remain unchanged. A failed reconciliation
+blocks Gateway startup. Repeating startup after a successful reconciliation is
+idempotent.
+
+`src/agents/startup-run-reconciler.test.ts` covers queued/no-attempt repair,
+running attempt repair, second-startup idempotency, rollback when the run update
+fails, uncertain cap preservation across SQLite reopen, and the permanent
+terminal-commit-failure restart path without provider replay. The bootstrap test
+covers reconciliation failure preventing Gateway startup, then a later healthy
+startup repairing the same run. M1B remains **PARTIAL** pending independent
+review; M2 deterministic remains **PARTIAL** pending independent review; M2
+live remains **NOT RUN**. No checkpoint readiness is claimed.
+
+Current validation: focused runtime 59, sessions 17, storage 7, Gateway 21,
+and startup reconciliation 6 tests (verbose reporter); TypeScript and ESLint
+exit 0; full Vitest exits 0 (26 files / 169 tests); `git diff --check` and
+changed-plus-untracked Prettier exit 0. No live Gemini call was run.
+
+### Remediation evidence (current working tree, uncommitted)
+
+`./node_modules/.bin/tsc -p tsconfig.json --noEmit` exited 0.
+`./node_modules/.bin/eslint .` exited 0.
+`./node_modules/.bin/vitest run` exited 0: 25 files / 101 tests.
+Focused tests `src/models/gemini-interactions-provider.test.ts`,
+`src/agents/agent-runtime.test.ts`, and `src/test/import-boundaries.test.ts`
+exited 0: 29 tests. The provider projection test proves `store=false`, no
+`previous_interaction_id`, and a `gemini-thought-signature-v1` opaque payload
+projected as a native `thought` step. The runtime test persists the signature
+at transcript sequence 2 for the deterministic `Question` / `Answer` exchange.
+
+The deterministic gate remains PARTIAL pending independent review. The current
+suite uses event-driven synchronization rather than sleep-based ordering waits;
+M2 live remains NOT RUN.
+
+Continuation Batch A (current working tree): `src/agents/agent-runtime.test.ts`
+now proves after real SQLite close/reopen that required continuation payloads
+which are empty, whitespace-only, invalid UTF-8, an unsupported schema label,
+or an unsupported version fail with `MODEL_HISTORY_INCOMPATIBLE` before a second
+provider dispatch. The tests also assert the sentinel opaque signature is absent
+from transcript text, Run Journal entries, and terminal runtime events. Provider,
+model, session, exchange association, and multiple-sidecar ordering remain
+separate unfinished continuation work; M2 deterministic stays PARTIAL.
+
+```text
+Live verification requires an operator-supplied GEMINI_API_KEY and remains NOT RUN
+for this working tree.
 ```
 
 The next active plan after completion should cover Tool Runtime, policy, approval, and the first safe tools. It must not be opened as active before this plan is completed or intentionally superseded.
+
+Continuation Batch B1 evidence (uncommitted working tree): migration 008 adds
+provider/model/model-call association columns. `src/agents/agent-runtime.test.ts`
+proves provider mismatch, exact model mismatch, and missing association metadata
+fail after SQLite close/reopen before second provider dispatch. M2 remains PARTIAL.
+
+Continuation Batch B2.1 evidence (uncommitted working tree, 2026-07-27):
+`src/agents/agent-runtime.test.ts` proves
+`reconstructs continuation when assistant and sidecar model call ids match after reopen`,
+`fails after reopen when continuation belongs to another model call`, and
+`fails after reopen when continuation-required assistant entry has no model call id`.
+Each uses direct SQLite historical persistence, a complete close/reopen, a new
+runtime, and a RuntimeEventBus subscription registered before admission. The
+matching association completes with one second-runtime provider call; mismatch
+and missing assistant metadata fail with `MODEL_HISTORY_INCOMPATIBLE` before
+provider dispatch. `src/sessions/sqlite-transcript-store.test.ts` proves
+`preserves assistant model call id across SQLite reopen`; migration tests prove
+fresh v9, v8-to-v9 upgrade columns/index, and reopen. Reproducible validation:
+`vitest run src/models/gemini-interactions-provider.test.ts src/agents/agent-runtime.test.ts src/sessions/sqlite-transcript-store.test.ts src/storage/migrate.test.ts`
+exited 0 (4 files / 50 tests); `tsc -p tsconfig.json --noEmit`, `eslint .`, and
+`vitest run` exited 0, with the full suite at 25 files / 118 tests. The earlier
+hang was fixture synchronization: a promise waited only for `run.completed`
+when the actual first-turn failure was hidden; the collector now resolves a
+pre-admission subscription from the authoritative admitted `runId`. Milestone
+1B status is unchanged; Milestone 2 deterministic remains PARTIAL, and M2 live
+remains NOT RUN. Batch B2 remains PARTIAL pending session and exchange mismatch.
+
+Continuation completion evidence (uncommitted working tree, 2026-07-27):
+`does not use a continuation belonging to another session after reopen` and
+`does not use a continuation belonging to another exchange after reopen` use
+real SQLite close/reopen and fail closed with `MODEL_HISTORY_INCOMPATIBLE`
+before provider dispatch. `reconstructs multiple continuations in exact
+transcript exchange order after reopen` inserts continuation rows in reverse
+database insertion order and proves the second runtime projects both opaque
+sidecars in transcript exchange order. The lookup authority is the exact
+`(session_id, sequence)` primary key, where `sequence` is the assistant
+transcript entry association; provider ID, exact model ID, model-call ID, kind,
+version, and non-empty payload are validated before dispatch. The
+`transcript_continuations` primary key rejects duplicate exact associations.
+
+Continuation close/reopen success, missing/empty/malformed/version mismatch,
+provider/model/model-call mismatch, session mismatch, exchange mismatch,
+multiple-sidecar ordering, and sentinel non-disclosure are PASS in deterministic
+tests. Sentinel checks cover transcript text, durable run/error state, Run
+Journal, RuntimeEventBus events, Gateway runtime-event projection, and the
+captured Pino logger sink. Reproducible validation: `vitest run
+src/agents/agent-runtime.test.ts` exited 0 (1 file / 42 tests); `vitest run
+src/models/gemini-interactions-provider.test.ts
+src/sessions/sqlite-transcript-store.test.ts src/storage/migrate.test.ts
+src/bootstrap/create-logger.test.ts` exited 0 (4 files / 14 tests);
+`tsc -p tsconfig.json --noEmit`, `eslint .`, and `vitest run` exited 0, with the
+full suite at 25 files / 123 tests. M2 deterministic remains PARTIAL because
+non-continuation required gates remain open; M2 live remains NOT RUN.
