@@ -1,0 +1,7 @@
+interface:
+  display_name: "Agent Report"
+  short_description: "Create validated CLI checkpoint reports"
+  default_prompt: "Create the required checkpoint report from the current task context."
+
+policy:
+  allow_implicit_invocation: false
