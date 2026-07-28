@@ -1,6 +1,6 @@
 # Active Plan 0001: Core Runtime Vertical Slice
 
-**Status:** Active — M1B PASS; M2 deterministic PASS; M2 live NOT RUN
+**Status:** Active — M1B PASS; M2 deterministic PASS; M2 live FAIL
 **Scope:** Milestones 0–2
 **Target outcome:** One durable Gateway-to-Gemini conversation round trip, followed by a coherent second round after restart
 **Architecture authority:** `docs/ARCHITECTURE.md`; ADR 0001–0010 and 0015
@@ -300,7 +300,7 @@ run.journal
 > (`55095d4593f39b6d52e9e4cec4ef0b1495ae96f4`). The per-workstream checkboxes
 > below are the original Phase D definitions retained for traceability; their
 > acceptance is proven by §17.10/§17.14 and the validation in §17.14. M2 live
-> remains **NOT RUN** and is not promoted.
+> is **FAIL** per independent assessment results (§18).
 
 ### D1. Agent registry and immutable snapshot — CLOSED (commit 55095d4)
 
@@ -394,17 +394,19 @@ Using fake provider and storage fault injection:
 
 ### Milestone 2 live gate
 
+Independent closure assessment result: **FAIL** (3 implementation blockers, 4 evidence gaps, see §18).
+
 Run only when explicitly enabled with a valid host-side Gemini key:
 
-- [ ] Start with a fresh persistent database.
-- [ ] Connect through the real Gateway handshake.
-- [ ] Submit one prompt to `primary`.
+- [x] Start with a fresh persistent database.
+- [x] Connect through the real Gateway handshake.
+- [x] Submit one prompt to `primary`.
 - [ ] Observe run/stage/model/terminal events.
 - [ ] Read the committed transcript and journal through application/Gateway APIs.
 - [ ] Verify usage ledger settlement and model/price/policy revisions.
-- [ ] Stop and restart the process.
+- [x] Stop and restart the process.
 - [ ] Read the same history/journal/usage records.
-- [ ] Submit a second prompt in the same logical session.
+- [x] Submit a second prompt in the same logical session.
 - [ ] Verify local transcript projection and required continuation produce a coherent reply without provider-hosted session state.
 
 ## 11. Schema and migration checklist
@@ -528,7 +530,19 @@ Command and explicit opt-in configuration:
 `GEMINI_API_KEY` loaded from ignored local `.env`; `NODE_ENV=production`, fresh temporary SQLite, and real Gateway on localhost.
 
 Result:
-NOT RUN during the current remediation. Historical live narrative is not current executable evidence for this working tree.
+FAIL (Independent M2 live closure assessment synchronized).
+Assessment findings:
+- 3 Implementation Blockers:
+  1. Gateway/runtime event stream contract unfulfilled (only terminal events observed; missing non-terminal run/stage/model lifecycle events).
+  2. Incomplete Run Journal timeline (missing mandatory dispatch, settlement, continuation, and terminal outcome records).
+  3. Incomplete usage revision evidence (missing full matched policy ID/revision and required revision/rule metadata persistence).
+- 4 Evidence Gaps:
+  1. Direct SQL inspection used instead of supported application/Gateway APIs.
+  2. Full restart persistence not proven via supported APIs.
+  3. Lack of conclusive live continuation architecture proof on second prompt.
+  4. Non-reproducible evidence bundle (temporary verifier removed).
+- 1 P2 Non-Blocking:
+  1. Regex import-boundary test (src/test/import-boundaries.test.ts).
 ```
 
 ### Migrations added
@@ -612,7 +626,7 @@ Do not move this plan to `docs/plans/completed/` until every item is true.
 
 ## 16. Remaining risks and follow-up
 
-This plan stays Active only because M2 live is **NOT RUN**. The deterministic
+This plan stays Active because M2 live is **FAIL** (independent live closure assessment). The deterministic
 continuation reconstruction/projection and terminal-publication/concurrency
 gates are complete and closed (D1–D7 **CLOSED**, M2 deterministic **PASS**);
 see §17.14 for synchronized evidence against commit `55095d4`.
@@ -620,7 +634,7 @@ see §17.14 for synchronized evidence against commit `55095d4`.
 ### Current remediation status (authoritative)
 
 M0 is **PASS**. M1A is **PASS**. M1B is **PASS**. M2 deterministic is **PASS**
-(D1–D7 **CLOSED**, implementation commit `55095d4`). M2 live is **NOT RUN**.
+(D1–D7 **CLOSED**, implementation commit `55095d4`). M2 live is **FAIL**.
 
 Terminal persistence uses one SQLite transaction for attempt/run terminal state.
 Checkpoint creates an immutable primary plan and failed fallback plan; Finalize
@@ -814,10 +828,10 @@ non-continuation required gates remain open; M2 live remains NOT RUN.
 
 - **Base commit:** `8a45165`
 - **Implementation commit:** `55095d4` (`55095d4593f39b6d52e9e4cec4ef0b1495ae96f4`)
-- **Status:** `CLOSED — M2 deterministic PASS` (independent narrow closure re-audit confirmed; see §17.14)
+- **Status:** `CLOSED — M2 deterministic PASS; M2 live FAIL` (independent assessment synchronized; see §18)
 - **M1B:** `PASS`
 - **M2 deterministic:** `PASS` (§17.10 acceptance matrix met; D1–D7 CLOSED)
-- **M2 live:** `NOT RUN` (no Gemini live in this remediation)
+- **M2 live:** `FAIL` (independent M2 live assessment results synchronized)
 - **Non-blocking P2 count:** 1 (regex import-boundary enforcement; excluded from this scope)
 - **Migration decision:** `VALID` (none required)
 
@@ -1155,7 +1169,7 @@ observed fact until the implementation session reproduces it.
 | D2               | deterministic estimator; configured bounded budget; typed overflow before dispatch; no provider/usage-dispatch on overflow; lifecycle/finalization correct                                                                          | `TokenEstimator`; budget from config/registry; `CONTEXT_BUDGET_EXCEEDED` pre-dispatch check                  | §17.4.4 cases        | targeted + full vitest              |
 | D3               | `HarnessRegistry` bootstrap-owned; resolves by snapshot; unknown harness typed fail; no private harness instantiation; one-step/one-provider-call invariant                                                                         | `HarnessRegistry`; `resolve(snapshot.harnessId)`; `HARNESS_NOT_FOUND`                                        | §17.5.3 cases        | targeted + full vitest              |
 | D4 deterministic | production-shaped composition runs with fake Gemini client; no network; snapshot route reaches provider request; usage/transcript/continuation/finalization proven in one flow; reopen second-cycle passes; failure scenario passes | `createApp(config,{geminiClient})`; real provider + fake client                                              | §17.6.2–17.6.5 cases | composed suite + full vitest        |
-| Regression       | M1B tests pass; D5–D7 tests pass; migration suite passes; no skipped tests; typecheck/lint/format pass per policy; M2 live still `NOT RUN`                                                                                          | unchanged D5–D7 wiring except where D1–D4 touch them                                                         | existing suites      | full vitest; tsc; eslint; format    |
+| Regression       | M1B tests pass; D5–D7 tests pass; migration suite passes; no skipped tests; typecheck/lint/format pass per policy; M2 live `FAIL`                                                                                                   | unchanged D5–D7 wiring except where D1–D4 touch them                                                         | existing suites      | full vitest; tsc; eslint; format    |
 
 ### 17.11 Plan/status synchronization phase (executed against commit 55095d4)
 
@@ -1166,7 +1180,7 @@ applied in the plan commit that records M1B and M2 deterministic closure:
 - D1–D4 checklist items are checked only after their acceptance evidence exists.
 - D5–D7 retain status based on regression results.
 - M2 deterministic is promoted to `PASS` only when the whole §17.10 matrix passes.
-- M2 live stays `NOT RUN`.
+- M2 live is `FAIL` (independent live closure assessment synchronized; see §18).
 - Replace every "uncommitted working tree" / "current working tree, uncommitted" wording with the exact commit hash and evidence references.
 - Remove the unsupported "non-continuation required gates remain open" claim (§16:786) or replace it with specific gates.
 - Fill the `_pending_` key observable evidence with real deterministic values.
@@ -1201,14 +1215,15 @@ Status wording after the narrow closure re-audit and synchronization:
 
 ```text
 Narrow D1/D3/D4 and formatting remediation closed;
-independent re-audit confirmed M1B PASS, D1-D7 CLOSED, M2 deterministic PASS.
+independent re-audit confirmed M1B PASS, D1-D7 CLOSED, M2 deterministic PASS;
+independent M2 live assessment synchronized as FAIL.
 ```
 
 An independent read-only narrow closure re-audit (base commit `8a45165`,
 implementation commit `55095d4`) confirmed D1, D3, D4, and the format/evidence
 gates are CLOSED, D2 and D5-D7 regression remains green, and no Decision/ADR
 violation exists. M2 deterministic is promoted to `PASS` and the §15 / §10
-checkboxes are checked. M2 live remains `NOT RUN`; no Gemini live call was made.
+checkboxes are checked. M2 live is `FAIL` following the independent live assessment (§18).
 
 #### Files changed (production)
 
@@ -1289,7 +1304,7 @@ this remediation).
 | Regression | M1B remains green                               | full vitest 213/213 (lane/FIFO/cancel/finalize/disconnect tests pass)                                   | MET    |
 | Regression | D5–D7 remain green                              | usage-budget-gate, agent-runtime usage/recovery, startup-run-reconciler tests pass                      | MET    |
 | Validation | typecheck/lint/full test/touched format pass    | tsc/eslint/vitest exit 0; prettier touched pass                                                         | MET    |
-| Live       | Gemini live not executed                        | no live call; M2 live NOT RUN                                                                           | MET    |
+| Live       | Gemini live assessment synchronized             | live execution evaluated; M2 live FAIL                                                                  | FAIL   |
 
 #### P2 inventory (unchanged)
 
@@ -1299,6 +1314,68 @@ session. No placeholder P2s exist.
 
 #### Remaining gaps
 
-None. The independent narrow closure re-audit confirmed closure (D1, D3, D4,
-format/evidence CLOSED; D2/D5-D7 regression green; no Decision/ADR violation);
-M2 deterministic is promoted to `PASS`, synchronized against commit `55095d4`.
+M2 live exhibits 3 production implementation blockers and 4 evidence gaps (§18).
+
+---
+
+## 18. Independent M2 Live Assessment Synchronization
+
+- **Assessment Date:** 2026-07-28
+- **Working Tree Checkpoint:** `e04a388995e1ad3429f1074645daa175f4a06b04` (clean)
+- **Synchronized Status:** `M1B PASS; M2 deterministic PASS; M2 live FAIL`
+
+### 18.1 Executive Assessment Summary
+
+The independent live closure assessment of Milestone 2 (M2 live) evaluated execution against the production runtime path using a host-side Gemini API key and persistent storage.
+
+Conclusions:
+
+- **M1B:** Retained as **PASS**.
+- **M2 deterministic (D1–D7):** Retained as **PASS**.
+- **M2 live:** Evaluated as **FAIL**.
+- **P2 non-blocking count:** Retained as **1** (`P2 NON-BLOCKING`: regex-based import boundary test).
+
+### 18.2 Categorized Assessment Findings
+
+#### IMPLEMENTATION BLOCKER (Production Runtime Blockers)
+
+1. **Gateway/runtime event stream contract unfulfilled**
+   - _Finding:_ The live run observed only terminal events (e.g. `run.completed` / `run.failed`).
+   - _Details:_ The production runtime has not emitted the full set of non-terminal run, stage, model, and tool lifecycle events required for the Gateway to forward to connected clients per contract (ADR 0004 & ADR 0010).
+   - _Invariant:_ Run Journal rows cannot be substituted for Gateway runtime streaming events.
+
+2. **Incomplete Run Journal timeline**
+   - _Finding:_ Live evidence lacks mandatory lifecycle records in the durable journal.
+   - _Details:_ Missing records include at least dispatch, settlement, continuation evidence, and terminal journal outcome (or equivalent taxonomy per ADR 0006).
+   - _Invariant:_ The journal does not yet fully demonstrate the complete end-to-end sequence: `reservation → dispatch → model outcome → settlement → continuation/checkpoint → finalization → terminal lifecycle`.
+
+3. **Incomplete usage revision evidence**
+   - _Finding:_ Usage revision and rule metadata persistence is incomplete.
+   - _Details:_ While basic reservation/settlement and price revisions were demonstrated at existing levels, the system has not fully proven or persisted the matched policy ID/revision and required rule/revision metadata according to the usage accounting contract (ADR 0015).
+
+#### EVIDENCE GAP (Verification & API Protocol Gaps)
+
+1. **Direct SQL inspection dependency**
+   - _Transcript and Run Journal validation:_ Checked primarily via direct SQLite queries rather than through supported application or Gateway APIs.
+
+2. **Restart state retrieval via supported APIs**
+   - _Persistence verification:_ Complete state persistence across restart (history, journal, and usage records) was not fully demonstrated using supported Gateway / application APIs.
+
+3. **Inconclusive live continuation architecture proof**
+   - _Second prompt evaluation:_ While the second prompt demonstrated contextual coherence, the evidence is insufficient to conclusively prove that the host-owned outbound continuation architecture was utilized during live execution.
+
+4. **Non-reproducible evidence bundle**
+   - _Artifact integrity:_ The temporary verifier script/tool was deleted, leaving the evidence bundle non-reproducible in its current state.
+
+#### P2 NON-BLOCKING
+
+- **Regex-based import-boundary test (`src/test/import-boundaries.test.ts`)**
+  - Retained as `P2 NON-BLOCKING`. Excluded from this docs synchronization workstream.
+
+#### STALE DOCUMENTATION / PLAN STATE
+
+- Prior documentation state referencing M2 live as `NOT RUN` or `CANDIDATE PASS` has been synchronized to **FAIL** across all plan summaries and status sections.
+
+### 18.3 Next Workstream Direction
+
+A future workstream will address the three production implementation blockers (Gateway lifecycle event emission, complete Run Journal timeline logging, and full usage policy revision persistence) and close the four evidence gaps using supported Gateway/application APIs before re-evaluating M2 live.
