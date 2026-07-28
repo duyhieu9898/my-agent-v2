@@ -66,6 +66,10 @@ describe("migrateDatabase", () => {
         version: 9,
         name: "add_transcript_model_call_association",
       },
+      {
+        version: 10,
+        name: "add_usage_policy_metadata",
+      },
     ]);
   });
 
@@ -84,7 +88,7 @@ describe("migrateDatabase", () => {
       count: number;
     };
 
-    expect(row.count).toBe(9);
+    expect(row.count).toBe(10);
   });
 
   it("rolls back a failed migration and does not record it", () => {
@@ -132,7 +136,7 @@ describe("migrateDatabase", () => {
     reopenedDatabase.close();
     temporaryDatabase.close();
 
-    expect(count.count).toBe(9);
+    expect(count.count).toBe(10);
   });
 
   it("upgrades a version 7 database with continuation association columns", () => {
@@ -175,6 +179,35 @@ describe("migrateDatabase", () => {
     );
     expect(indexes.map((index) => index.name)).toContain(
       "transcript_entries_model_call_idx",
+    );
+  });
+
+  it("upgrades a version 9 database with usage policy metadata columns", () => {
+    migrateDatabase(
+      database,
+      migrations.filter((migration) => migration.version <= 9),
+    );
+    migrateDatabase(database);
+    const reservationCols = database
+      .prepare("PRAGMA table_info(usage_reservations)")
+      .all() as Array<{ name: string }>;
+    const recordCols = database
+      .prepare("PRAGMA table_info(usage_records)")
+      .all() as Array<{ name: string }>;
+
+    expect(reservationCols.map((c) => c.name)).toEqual(
+      expect.arrayContaining([
+        "matched_policy_ids",
+        "policy_revision",
+        "rule_metadata",
+      ]),
+    );
+    expect(recordCols.map((c) => c.name)).toEqual(
+      expect.arrayContaining([
+        "matched_policy_ids",
+        "policy_revision",
+        "rule_metadata",
+      ]),
     );
   });
 });

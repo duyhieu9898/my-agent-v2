@@ -90,6 +90,17 @@ export class AgentRuntime {
       createdAt: now,
       updatedAt: now,
     });
+    this.dependencies.events.emit({
+      schemaVersion: 1,
+      eventName: "run.queued",
+      occurredAt: now,
+      sourceModule: "agents",
+      agentId,
+      sessionKey: session.key,
+      sessionId: session.sessionId,
+      runId,
+      payload: { status: "queued" },
+    });
     this.dependencies.lifecycleProbe?.record({ runId, step: "run.admitted" });
     const finalizer = new FinalizeStage();
     const checkpoint = new CheckpointStage();
@@ -107,6 +118,30 @@ export class AgentRuntime {
             runId,
             step: "finalize.started",
           });
+          const plan = finalizationPlan.primary;
+          this.dependencies.events.emit({
+            schemaVersion: 1,
+            eventName: "finalize.started",
+            occurredAt: plan.occurredAt,
+            sourceModule: "agents",
+            agentId,
+            sessionKey: session.key,
+            sessionId: session.sessionId,
+            runId,
+            payload: { terminalStatus: plan.runStatus },
+          });
+          if (journalAvailable) {
+            try {
+              await this.dependencies.journal.append({
+                runId,
+                eventName: "finalize.started",
+                payload: { terminalStatus: plan.runStatus },
+                occurredAt: plan.occurredAt,
+              });
+            } catch {
+              journalAvailable = false;
+            }
+          }
           const commit = async (candidate: TerminalCommitPlan) => {
             const result =
               await this.dependencies.runs.commitTerminalOutcome(candidate);
@@ -117,7 +152,6 @@ export class AgentRuntime {
               );
             return result;
           };
-          const plan = finalizationPlan.primary;
           let committedPlan = plan;
           try {
             await commit(plan);
@@ -151,6 +185,12 @@ export class AgentRuntime {
               await this.dependencies.journal.append({
                 runId,
                 eventName: `finalize.${terminalStatus}`,
+                payload: { terminal: terminalStatus },
+                occurredAt: plan.occurredAt,
+              });
+              await this.dependencies.journal.append({
+                runId,
+                eventName: `run.${terminalStatus}`,
                 payload: { terminal: terminalStatus },
                 occurredAt: plan.occurredAt,
               });
@@ -263,6 +303,59 @@ export class AgentRuntime {
           new Date().toISOString(),
         );
         control.attemptId = randomIdFactory.nextAttemptId();
+        this.dependencies.events.emit({
+          schemaVersion: 1,
+          eventName: "run.started",
+          occurredAt: new Date().toISOString(),
+          sourceModule: "agents",
+          agentId,
+          sessionKey: session.key,
+          sessionId: session.sessionId,
+          runId,
+          payload: { status: "running" },
+        });
+        this.dependencies.events.emit({
+          schemaVersion: 1,
+          eventName: "attempt.started",
+          occurredAt: new Date().toISOString(),
+          sourceModule: "agents",
+          agentId,
+          sessionKey: session.key,
+          sessionId: session.sessionId,
+          runId,
+          attemptId: control.attemptId,
+          payload: { attemptId: control.attemptId },
+        });
+        this.dependencies.events.emit({
+          schemaVersion: 1,
+          eventName: "stage.started",
+          occurredAt: new Date().toISOString(),
+          sourceModule: "agents",
+          agentId,
+          sessionKey: session.key,
+          sessionId: session.sessionId,
+          runId,
+          attemptId: control.attemptId,
+          payload: { stagePhase: "setup", stageId: "setup" },
+        });
+        if (journalAvailable) {
+          try {
+            await this.dependencies.journal.append({
+              runId,
+              eventName: "attempt.started",
+              payload: { attemptId: control.attemptId },
+              occurredAt: new Date().toISOString(),
+            });
+            await this.dependencies.journal.append({
+              runId,
+              eventName: "stage.started",
+              payload: { stagePhase: "setup", stageId: "setup" },
+              occurredAt: new Date().toISOString(),
+            });
+          } catch {
+            journalAvailable = false;
+          }
+        }
         if (this.dependencies.attempts) {
           await this.dependencies.attempts.create(
             control.attemptId,
@@ -364,6 +457,30 @@ export class AgentRuntime {
             turns: context.turns,
             continuations: context.continuations,
           });
+          this.dependencies.events.emit({
+            schemaVersion: 1,
+            eventName: "context.prepared",
+            occurredAt: new Date().toISOString(),
+            sourceModule: "agents",
+            agentId,
+            sessionKey: session.key,
+            sessionId: session.sessionId,
+            runId,
+            attemptId: control.attemptId,
+            payload: { estimatedTokens: Number(contextTokens) },
+          });
+          if (journalAvailable) {
+            try {
+              await this.dependencies.journal.append({
+                runId,
+                eventName: "context.prepared",
+                payload: { estimatedTokens: Number(contextTokens) },
+                occurredAt: new Date().toISOString(),
+              });
+            } catch {
+              journalAvailable = false;
+            }
+          }
           if (contextTokens > BigInt(snapshot.contextTokenBudget))
             throw new AppError(
               "CONTEXT_BUDGET_EXCEEDED",
@@ -396,6 +513,57 @@ export class AgentRuntime {
             usage.usageReservationId,
             new Date().toISOString(),
           );
+          this.dependencies.events.emit({
+            schemaVersion: 1,
+            eventName: "stage.started",
+            occurredAt: new Date().toISOString(),
+            sourceModule: "agents",
+            agentId,
+            sessionKey: session.key,
+            sessionId: session.sessionId,
+            runId,
+            attemptId: control.attemptId,
+            modelCallId,
+            payload: { stagePhase: "iteration", stageId: "model-step" },
+          });
+          this.dependencies.events.emit({
+            schemaVersion: 1,
+            eventName: "model.requested",
+            occurredAt: new Date().toISOString(),
+            sourceModule: "agents",
+            agentId,
+            sessionKey: session.key,
+            sessionId: session.sessionId,
+            runId,
+            attemptId: control.attemptId,
+            modelCallId,
+            payload: {
+              providerId: snapshot.modelRoute.providerId,
+              modelId: snapshot.modelRoute.modelId,
+            },
+          });
+          if (journalAvailable) {
+            try {
+              await this.dependencies.journal.append({
+                runId,
+                eventName: "stage.started",
+                payload: { stagePhase: "iteration", stageId: "model-step" },
+                occurredAt: new Date().toISOString(),
+              });
+              await this.dependencies.journal.append({
+                runId,
+                eventName: "model.requested",
+                payload: {
+                  modelCallId,
+                  providerId: snapshot.modelRoute.providerId,
+                  modelId: snapshot.modelRoute.modelId,
+                },
+                occurredAt: new Date().toISOString(),
+              });
+            } catch {
+              journalAvailable = false;
+            }
+          }
           try {
             const output = await this.withTimeout(
               harness.executeStep({
@@ -430,46 +598,227 @@ export class AgentRuntime {
                 modelId: snapshot.modelRoute.modelId,
                 modelCallId,
               };
-            await this.dependencies.journal.append({
-              runId,
+            this.dependencies.events.emit({
+              schemaVersion: 1,
               eventName: "model.completed",
-              payload: { modelCallId },
               occurredAt: new Date().toISOString(),
+              sourceModule: "agents",
+              agentId,
+              sessionKey: session.key,
+              sessionId: session.sessionId,
+              runId,
+              attemptId: control.attemptId,
+              modelCallId,
+              payload: {
+                providerId: snapshot.modelRoute.providerId,
+                modelId: snapshot.modelRoute.modelId,
+              },
             });
+            if (journalAvailable) {
+              try {
+                await this.dependencies.journal.append({
+                  runId,
+                  eventName: "model.completed",
+                  payload: { modelCallId },
+                  occurredAt: new Date().toISOString(),
+                });
+                if (output.continuation) {
+                  await this.dependencies.journal.append({
+                    runId,
+                    eventName: "model.continuation.persisted",
+                    payload: {
+                      modelCallId,
+                      version: output.continuation.version,
+                      payloadLength: output.continuation.payload.length,
+                    },
+                    occurredAt: new Date().toISOString(),
+                  });
+                }
+              } catch {
+                journalAvailable = false;
+              }
+            }
             if (
               output.billingCertainty === "actual-known" &&
               output.usage.providerTotalTokens !== undefined &&
               output.usage.inputTokens !== undefined &&
               output.usage.outputTokens !== undefined
-            )
+            ) {
               await this.dependencies.usageBudgetGate.settle(
                 usage,
                 output.usage,
                 new Date().toISOString(),
               );
-            else
+              if (journalAvailable) {
+                try {
+                  await this.dependencies.journal.append({
+                    runId,
+                    eventName: "usage.settled",
+                    payload: {
+                      usageReservationId: usage.usageReservationId,
+                      modelCallId,
+                      providerTotalTokens: Number(
+                        output.usage.providerTotalTokens,
+                      ),
+                      inputTokens: Number(output.usage.inputTokens),
+                      outputTokens: Number(output.usage.outputTokens),
+                    },
+                    occurredAt: new Date().toISOString(),
+                  });
+                } catch {
+                  journalAvailable = false;
+                }
+              }
+            } else {
               await this.dependencies.usageBudgetGate.markUncertain(
                 usage,
                 new Date().toISOString(),
               );
+              if (journalAvailable) {
+                try {
+                  await this.dependencies.journal.append({
+                    runId,
+                    eventName: "usage.uncertain",
+                    payload: {
+                      usageReservationId: usage.usageReservationId,
+                      modelCallId,
+                    },
+                    occurredAt: new Date().toISOString(),
+                  });
+                } catch {
+                  journalAvailable = false;
+                }
+              }
+            }
           } catch (error) {
+            this.dependencies.events.emit({
+              schemaVersion: 1,
+              eventName: "model.failed",
+              occurredAt: new Date().toISOString(),
+              sourceModule: "agents",
+              agentId,
+              sessionKey: session.key,
+              sessionId: session.sessionId,
+              runId,
+              attemptId: control.attemptId,
+              modelCallId,
+              payload: {
+                error: error instanceof Error ? error.message : "MODEL_FAILED",
+              },
+            });
             if (
               error instanceof ModelProviderError &&
               (error.billingCertainty === "not-billable" ||
                 error.billingCertainty === "not-dispatched")
-            )
+            ) {
               await this.dependencies.usageBudgetGate.release(
                 usage,
                 new Date().toISOString(),
               );
-            else
+              if (journalAvailable) {
+                try {
+                  await this.dependencies.journal.append({
+                    runId,
+                    eventName: "usage.released",
+                    payload: {
+                      usageReservationId: usage.usageReservationId,
+                      modelCallId,
+                    },
+                    occurredAt: new Date().toISOString(),
+                  });
+                } catch {
+                  journalAvailable = false;
+                }
+              }
+            } else {
               await this.dependencies.usageBudgetGate.markUncertain(
                 usage,
                 new Date().toISOString(),
               );
+              if (journalAvailable) {
+                try {
+                  await this.dependencies.journal.append({
+                    runId,
+                    eventName: "usage.uncertain",
+                    payload: {
+                      usageReservationId: usage.usageReservationId,
+                      modelCallId,
+                    },
+                    occurredAt: new Date().toISOString(),
+                  });
+                } catch {
+                  journalAvailable = false;
+                }
+              }
+            }
+            if (
+              error instanceof AppError &&
+              error.code === "MODEL_HISTORY_INCOMPATIBLE" &&
+              journalAvailable
+            ) {
+              try {
+                await this.dependencies.journal.append({
+                  runId,
+                  eventName: "model.history.incompatible",
+                  payload: { modelCallId },
+                  occurredAt: new Date().toISOString(),
+                });
+              } catch {
+                journalAvailable = false;
+              }
+            }
             throw error;
           }
+          this.dependencies.events.emit({
+            schemaVersion: 1,
+            eventName: "stage.completed",
+            occurredAt: new Date().toISOString(),
+            sourceModule: "agents",
+            agentId,
+            sessionKey: session.key,
+            sessionId: session.sessionId,
+            runId,
+            attemptId: control.attemptId,
+            modelCallId,
+            payload: { stagePhase: "iteration", stageId: "model-step" },
+          });
+          if (journalAvailable) {
+            try {
+              await this.dependencies.journal.append({
+                runId,
+                eventName: "stage.completed",
+                payload: { stagePhase: "iteration", stageId: "model-step" },
+                occurredAt: new Date().toISOString(),
+              });
+            } catch {
+              journalAvailable = false;
+            }
+          }
         } else await this.executeWithTimeout(controller);
+        this.dependencies.events.emit({
+          schemaVersion: 1,
+          eventName: "attempt.completed",
+          occurredAt: new Date().toISOString(),
+          sourceModule: "agents",
+          agentId,
+          sessionKey: session.key,
+          sessionId: session.sessionId,
+          runId,
+          attemptId: control.attemptId,
+          payload: { attemptId: control.attemptId },
+        });
+        if (journalAvailable) {
+          try {
+            await this.dependencies.journal.append({
+              runId,
+              eventName: "attempt.completed",
+              payload: { attemptId: control.attemptId },
+              occurredAt: new Date().toISOString(),
+            });
+          } catch {
+            journalAvailable = false;
+          }
+        }
         const result: StageResult = { kind: "ok" };
         if (
           checkpoint.decide({

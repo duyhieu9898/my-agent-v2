@@ -68,3 +68,17 @@ export const handleRunJournal: GatewayMethodHandler = async ({
     }),
   };
 };
+export const handleRunUsage: GatewayMethodHandler = async ({
+  request,
+  dependencies,
+}) => {
+  const p = request.params as { runId: string };
+  return {
+    type: "res",
+    id: request.id,
+    ok: true,
+    payload: await runtimeDependencies(
+      dependencies.usageBudgetGate,
+    ).getUsageForRun(p.runId),
+  };
+};

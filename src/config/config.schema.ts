@@ -11,7 +11,7 @@ const usagePriceSchema = z.object({
 
 const usageCapPolicySchema = z.object({
   id: z.string().min(1),
-  revision: z.coerce.number().int().positive(),
+  revision: z.union([z.string(), z.number()]).optional(),
   agentId: z.string().min(1).optional(),
   providerId: z.literal("gemini-developer").optional(),
   modelId: z.literal("gemini-3.5-flash").optional(),
@@ -19,6 +19,12 @@ const usageCapPolicySchema = z.object({
   maxTokens: z.coerce.bigint().positive().optional(),
   maxCostMicros: z.coerce.bigint().positive().optional(),
   enabled: z.coerce.boolean().default(true),
+  ruleMetadata: z
+    .record(
+      z.string(),
+      z.union([z.string(), z.number(), z.boolean(), z.null()]),
+    )
+    .optional(),
 });
 
 export const configSchema = z.object({

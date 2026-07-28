@@ -17,6 +17,7 @@ import {
   RunGetParamsSchema,
   RunCancelParamsSchema,
   RunJournalParamsSchema,
+  RunUsageParamsSchema,
   SessionHistoryParamsSchema,
 } from "./runs.js";
 
@@ -58,6 +59,7 @@ export const GatewayMethods = {
     result: AnyResultSchema,
   },
   "run.journal": { params: RunJournalParamsSchema, result: AnyResultSchema },
+  "run.usage": { params: RunUsageParamsSchema, result: AnyResultSchema },
 } as const;
 
 export type GatewayMethod = keyof typeof GatewayMethods;

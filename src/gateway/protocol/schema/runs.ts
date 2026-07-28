@@ -37,4 +37,8 @@ export const RunJournalParamsSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+export const RunUsageParamsSchema = Type.Object(
+  { runId: NonEmptyString },
+  { additionalProperties: false },
+);
 export const AnyResultSchema = Type.Unknown();

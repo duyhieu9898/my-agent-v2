@@ -14,6 +14,7 @@ export type UsagePrice = Readonly<{
 }>;
 export type UsageCapPolicy = Readonly<{
   id: string;
+  revision?: string | number;
   window: "day" | "month";
   maxTokens?: bigint;
   maxCostMicros?: bigint;
@@ -21,11 +22,15 @@ export type UsageCapPolicy = Readonly<{
   providerId?: "gemini-developer";
   modelId?: "gemini-3.5-flash";
   enabled: boolean;
+  ruleMetadata?: Readonly<Record<string, string | number | boolean | null>>;
 }>;
 export type UsageReservation = Readonly<{
   usageReservationId: string;
   modelCallId: string;
   reservedTokens: bigint;
+  matchedPolicyIds?: readonly string[];
+  policyRevision?: string;
+  ruleMetadata?: Readonly<Record<string, string | number | boolean | null>>;
 }>;
 export type UsageReservationInput = Readonly<{
   modelCallId: string;
@@ -162,14 +167,30 @@ export class UsageBudgetGate {
         )
           throw new AppError("USAGE_RESERVATION_FAILED", "USAGE_CAP_EXCEEDED");
       }
+
+      const matchedPolicyIds = applicable.map((p) => p.id);
+      const policyRevision =
+        applicable.map((p) => String(p.revision ?? 1)).join(",") ||
+        (price ? String(price.revision) : "1");
+      const combinedRuleMetadata = applicable.reduce(
+        (acc, p) => {
+          if (p.ruleMetadata) Object.assign(acc, p.ruleMetadata);
+          return acc;
+        },
+        {} as Record<string, string | number | boolean | null>,
+      );
+
       const reservation: UsageReservation = {
         usageReservationId: randomUUID(),
         modelCallId: input.modelCallId,
         reservedTokens: input.estimatedTokens,
+        matchedPolicyIds,
+        policyRevision,
+        ruleMetadata: combinedRuleMetadata,
       };
       this.database
         .prepare(
-          "INSERT INTO usage_reservations (usage_reservation_id, model_call_id, agent_id, session_id, run_id, attempt_id, provider_id, model_id, window_start, reserved_tokens, reserved_cost_micros, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?)",
+          "INSERT INTO usage_reservations (usage_reservation_id, model_call_id, agent_id, session_id, run_id, attempt_id, provider_id, model_id, window_start, reserved_tokens, reserved_cost_micros, status, created_at, matched_policy_ids, policy_revision, rule_metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?)",
         )
         .run(
           reservation.usageReservationId,
@@ -184,6 +205,9 @@ export class UsageBudgetGate {
           input.estimatedTokens.toString(),
           reservedCostMicros?.toString() ?? null,
           input.occurredAt,
+          JSON.stringify(matchedPolicyIds),
+          policyRevision,
+          JSON.stringify(combinedRuleMetadata),
         );
       return reservation;
     })();
@@ -208,13 +232,16 @@ export class UsageBudgetGate {
     this.database.transaction(() => {
       const route = this.database
         .prepare(
-          "SELECT provider_id, model_id, created_at FROM usage_reservations WHERE usage_reservation_id = ?",
+          "SELECT provider_id, model_id, created_at, matched_policy_ids, policy_revision, rule_metadata FROM usage_reservations WHERE usage_reservation_id = ?",
         )
         .get(reservation.usageReservationId) as
         | {
             provider_id: "gemini-developer";
             model_id: "gemini-3.5-flash";
             created_at: string;
+            matched_policy_ids: string | null;
+            policy_revision: string | null;
+            rule_metadata: string | null;
           }
         | undefined;
       const price = route
@@ -233,7 +260,7 @@ export class UsageBudgetGate {
         .run(occurredAt, reservation.usageReservationId);
       this.database
         .prepare(
-          "INSERT INTO usage_records (usage_record_id, usage_reservation_id, outcome, provider_total_tokens, input_tokens, output_tokens, cost_micros, cost_measurement, price_revision, occurred_at) VALUES (?, ?, 'settled', ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO usage_records (usage_record_id, usage_reservation_id, outcome, provider_total_tokens, input_tokens, output_tokens, cost_micros, cost_measurement, price_revision, occurred_at, matched_policy_ids, policy_revision, rule_metadata) VALUES (?, ?, 'settled', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .run(
           randomUUID(),
@@ -243,8 +270,20 @@ export class UsageBudgetGate {
           usage.outputTokens?.toString() ?? null,
           cost?.toString() ?? null,
           cost === undefined ? "unknown" : "derived",
-          price?.revision ?? null,
+          price?.revision ?? route?.policy_revision ?? null,
           occurredAt,
+          route?.matched_policy_ids ??
+            (reservation.matchedPolicyIds
+              ? JSON.stringify(reservation.matchedPolicyIds)
+              : null),
+          price?.revision ??
+            route?.policy_revision ??
+            reservation.policyRevision ??
+            null,
+          route?.rule_metadata ??
+            (reservation.ruleMetadata
+              ? JSON.stringify(reservation.ruleMetadata)
+              : null),
         );
     })();
   }
@@ -260,6 +299,75 @@ export class UsageBudgetGate {
     occurredAt: string,
   ): Promise<void> {
     this.terminal(reservation, "uncertain", occurredAt);
+  }
+
+  async getUsageForRun(runId: string): Promise<{
+    reservations: ReadonlyArray<Record<string, unknown>>;
+    records: ReadonlyArray<Record<string, unknown>>;
+  }> {
+    const reservations = this.database
+      .prepare(
+        "SELECT usage_reservation_id, model_call_id, agent_id, session_id, run_id, attempt_id, provider_id, model_id, window_start, reserved_tokens, reserved_cost_micros, status, created_at, dispatched_at, settled_at, matched_policy_ids, policy_revision, rule_metadata FROM usage_reservations WHERE run_id = ?",
+      )
+      .all(runId) as Array<Record<string, unknown>>;
+
+    const reservationIds = reservations.map(
+      (r) => r.usage_reservation_id as string,
+    );
+    let records: Array<Record<string, unknown>> = [];
+    if (reservationIds.length > 0) {
+      const placeholders = reservationIds.map(() => "?").join(",");
+      records = this.database
+        .prepare(
+          `SELECT usage_record_id, usage_reservation_id, outcome, provider_total_tokens, input_tokens, output_tokens, cost_micros, cost_measurement, price_revision, occurred_at, matched_policy_ids, policy_revision, rule_metadata FROM usage_records WHERE usage_reservation_id IN (${placeholders})`,
+        )
+        .all(...reservationIds) as Array<Record<string, unknown>>;
+    }
+
+    return {
+      reservations: reservations.map((row) => ({
+        usageReservationId: row.usage_reservation_id,
+        modelCallId: row.model_call_id,
+        agentId: row.agent_id,
+        sessionId: row.session_id,
+        runId: row.run_id,
+        attemptId: row.attempt_id,
+        providerId: row.provider_id,
+        modelId: row.model_id,
+        reservedTokens: row.reserved_tokens,
+        reservedCostMicros: row.reserved_cost_micros,
+        status: row.status,
+        createdAt: row.created_at,
+        dispatchedAt: row.dispatched_at,
+        settledAt: row.settled_at,
+        matchedPolicyIds: row.matched_policy_ids
+          ? JSON.parse(row.matched_policy_ids as string)
+          : [],
+        policyRevision: row.policy_revision,
+        ruleMetadata: row.rule_metadata
+          ? JSON.parse(row.rule_metadata as string)
+          : {},
+      })),
+      records: records.map((row) => ({
+        usageRecordId: row.usage_record_id,
+        usageReservationId: row.usage_reservation_id,
+        outcome: row.outcome,
+        providerTotalTokens: row.provider_total_tokens,
+        inputTokens: row.input_tokens,
+        outputTokens: row.output_tokens,
+        costMicros: row.cost_micros,
+        costMeasurement: row.cost_measurement,
+        priceRevision: row.price_revision,
+        occurredAt: row.occurred_at,
+        matchedPolicyIds: row.matched_policy_ids
+          ? JSON.parse(row.matched_policy_ids as string)
+          : [],
+        policyRevision: row.policy_revision,
+        ruleMetadata: row.rule_metadata
+          ? JSON.parse(row.rule_metadata as string)
+          : {},
+      })),
+    };
   }
 
   async recoverInterrupted(now: string): Promise<void> {
@@ -282,6 +390,17 @@ export class UsageBudgetGate {
     occurredAt: string,
   ): void {
     this.database.transaction(() => {
+      const route = this.database
+        .prepare(
+          "SELECT matched_policy_ids, policy_revision, rule_metadata FROM usage_reservations WHERE usage_reservation_id = ?",
+        )
+        .get(reservation.usageReservationId) as
+        | {
+            matched_policy_ids: string | null;
+            policy_revision: string | null;
+            rule_metadata: string | null;
+          }
+        | undefined;
       this.database
         .prepare(
           "UPDATE usage_reservations SET status = ?, settled_at = ? WHERE usage_reservation_id = ?",
@@ -289,9 +408,23 @@ export class UsageBudgetGate {
         .run(outcome, occurredAt, reservation.usageReservationId);
       this.database
         .prepare(
-          "INSERT INTO usage_records (usage_record_id, usage_reservation_id, outcome, cost_measurement, occurred_at) VALUES (?, ?, ?, 'unknown', ?)",
+          "INSERT INTO usage_records (usage_record_id, usage_reservation_id, outcome, cost_measurement, occurred_at, matched_policy_ids, policy_revision, rule_metadata) VALUES (?, ?, ?, 'unknown', ?, ?, ?, ?)",
         )
-        .run(randomUUID(), reservation.usageReservationId, outcome, occurredAt);
+        .run(
+          randomUUID(),
+          reservation.usageReservationId,
+          outcome,
+          occurredAt,
+          route?.matched_policy_ids ??
+            (reservation.matchedPolicyIds
+              ? JSON.stringify(reservation.matchedPolicyIds)
+              : null),
+          route?.policy_revision ?? reservation.policyRevision ?? null,
+          route?.rule_metadata ??
+            (reservation.ruleMetadata
+              ? JSON.stringify(reservation.ruleMetadata)
+              : null),
+        );
     })();
   }
   private priceFor(input: UsageReservationInput): UsagePrice | undefined {

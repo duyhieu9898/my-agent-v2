@@ -144,6 +144,7 @@ describe("Gateway WebSocket", () => {
       owner.frames.frames.filter(
         (frame) =>
           frame.type === "event" &&
+          frame.event === "run.completed" &&
           (frame.payload as { runId?: string }).runId === runId,
       ),
     ).toHaveLength(1);
@@ -230,6 +231,7 @@ describe("Gateway WebSocket", () => {
       client.frames.frames.filter(
         (frame) =>
           frame.type === "event" &&
+          frame.event === "run.failed" &&
           (frame.payload as { runId?: string }).runId === runId,
       ),
     ).toHaveLength(1);
@@ -311,6 +313,7 @@ describe("Gateway WebSocket", () => {
       client.frames.frames.filter(
         (frame) =>
           frame.type === "event" &&
+          frame.event === "run.cancelled" &&
           (frame.payload as { runId?: string }).runId === runId,
       ),
     ).toHaveLength(1);

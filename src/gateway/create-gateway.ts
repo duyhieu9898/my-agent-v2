@@ -17,12 +17,14 @@ export type GatewayOptions = {
 };
 
 export type Gateway = {
+  readonly port: number;
   start(): Promise<void>;
   stop(): Promise<void>;
 };
 
 export function createGateway(options: GatewayOptions): Gateway {
   const { host, port, logger, dependencies } = options;
+  let boundPort = port;
 
   let server: Server | undefined;
   let webSocketServer: WebSocketServer | undefined;
@@ -54,6 +56,10 @@ export function createGateway(options: GatewayOptions): Gateway {
   });
 
   return {
+    get port() {
+      return boundPort;
+    },
+
     async start(): Promise<void> {
       if (server) {
         throw new Error("Gateway is already started");
@@ -210,6 +216,10 @@ export function createGateway(options: GatewayOptions): Gateway {
         newServer.once("error", reject);
 
         newServer.listen(port, host, () => {
+          const address = newServer.address();
+          if (address && typeof address === "object") {
+            boundPort = address.port;
+          }
           newServer.off("error", reject);
           resolve();
         });

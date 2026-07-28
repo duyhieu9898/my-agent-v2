@@ -5,7 +5,7 @@ import { type Logger } from "pino";
 
 import type { AppConfig } from "../config/config.schema.js";
 import { createLogger } from "./create-logger.js";
-import { createGateway } from "../gateway/create-gateway.js";
+import { createGateway, type Gateway } from "../gateway/create-gateway.js";
 import { AgentRuntime } from "../agents/agent-runtime.js";
 import {
   AgentRegistry,
@@ -36,6 +36,7 @@ export type App = {
   config: AppConfig;
   logger: Logger;
   runtime: AgentRuntime;
+  gateway: Gateway;
   start(): Promise<void>;
   stop(): Promise<void>;
 };
@@ -112,6 +113,10 @@ export function createApp(
       id: policy.id,
       window: policy.window,
       enabled: policy.enabled,
+      ...(policy.revision === undefined ? {} : { revision: policy.revision }),
+      ...(policy.ruleMetadata === undefined
+        ? {}
+        : { ruleMetadata: policy.ruleMetadata }),
       ...(policy.maxTokens === undefined
         ? {}
         : { maxTokens: policy.maxTokens }),
@@ -182,6 +187,7 @@ export function createApp(
       events,
       runs,
       journal,
+      usageBudgetGate,
     },
   });
 
@@ -189,6 +195,7 @@ export function createApp(
     config,
     logger,
     runtime,
+    gateway,
 
     async start(): Promise<void> {
       await startupReconciler.reconcileInterruptedRuns(

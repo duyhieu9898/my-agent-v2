@@ -7,6 +7,7 @@ import { migration006CreateUsageLedger } from "./006-create-usage-ledger.js";
 import { migration007AddContinuationRequired } from "./007-add-continuation-required.js";
 import { migration008AddContinuationAssociation } from "./008-add-continuation-association.js";
 import { migration009AddTranscriptModelCallAssociation } from "./009-add-transcript-model-call-association.js";
+import { migration010AddUsagePolicyMetadata } from "./010-add-usage-policy-metadata.js";
 import type { Migration } from "./types.js";
 
 export const migrations: Migration[] = [
@@ -19,4 +20,5 @@ export const migrations: Migration[] = [
   migration007AddContinuationRequired,
   migration008AddContinuationAssociation,
   migration009AddTranscriptModelCallAssociation,
+  migration010AddUsagePolicyMetadata,
 ];

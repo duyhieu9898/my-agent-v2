@@ -348,7 +348,12 @@ describe("GeminiInteractionsProvider", () => {
       const events = new RuntimeEventBus();
       const terminal = new Promise<void>((resolve) =>
         events.subscribe((event) => {
-          if (event.eventName.startsWith("run.")) resolve();
+          if (
+            event.eventName === "run.completed" ||
+            event.eventName === "run.failed" ||
+            event.eventName === "run.cancelled"
+          )
+            resolve();
         }),
       );
       return {
@@ -491,7 +496,12 @@ describe("GeminiInteractionsProvider", () => {
       const events = new RuntimeEventBus();
       const terminal = new Promise<void>((resolve) =>
         events.subscribe((event) => {
-          if (event.eventName.startsWith("run.")) resolve();
+          if (
+            event.eventName === "run.completed" ||
+            event.eventName === "run.failed" ||
+            event.eventName === "run.cancelled"
+          )
+            resolve();
         }),
       );
       return {

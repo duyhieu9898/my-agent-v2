@@ -13,6 +13,7 @@ import {
   handleRunCancel,
   handleRunGet,
   handleRunJournal,
+  handleRunUsage,
   handleSessionHistory,
 } from "./runs.js";
 
@@ -31,4 +32,5 @@ export const gatewayMethodHandlers: Record<
   "run.cancel": handleRunCancel,
   "session.history": handleSessionHistory,
   "run.journal": handleRunJournal,
+  "run.usage": handleRunUsage,
 };

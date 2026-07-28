@@ -582,7 +582,13 @@ describe("AgentRuntime", () => {
         .filter(
           (event) =>
             event.runId === admission.runId &&
-            event.eventName.startsWith("run."),
+            (event.eventName === "run.infrastructure_failed" ||
+              event.eventName === "run.completed" ||
+              event.eventName === "run.failed" ||
+              event.eventName === "run.cancelled" ||
+              event.eventName === "finalize.completed" ||
+              event.eventName === "finalize.failed" ||
+              event.eventName === "finalize.cancelled"),
         ),
     ).toEqual([
       expect.objectContaining({ eventName: "run.infrastructure_failed" }),
@@ -842,8 +848,11 @@ describe("AgentRuntime", () => {
     expect(
       (
         await new SqliteRunJournalStore(database).readPage(accepted.runId)
-      ).entries.filter((entry) => entry.eventName.startsWith("finalize."))
-        .length,
+      ).entries.filter(
+        (entry) =>
+          entry.eventName !== "finalize.started" &&
+          entry.eventName.startsWith("finalize."),
+      ).length,
     ).toBe(1);
   });
 
@@ -921,8 +930,11 @@ describe("AgentRuntime", () => {
     expect(
       (
         await new SqliteRunJournalStore(database).readPage(accepted.runId)
-      ).entries.filter((entry) => entry.eventName.startsWith("finalize."))
-        .length,
+      ).entries.filter(
+        (entry) =>
+          entry.eventName !== "finalize.started" &&
+          entry.eventName.startsWith("finalize."),
+      ).length,
     ).toBe(1);
   });
 
@@ -1285,7 +1297,13 @@ describe("AgentRuntime", () => {
     const firstEvents = new RuntimeEventBus();
     const firstTerminal = new Promise<string>((resolve) =>
       firstEvents.subscribe((event) => {
-        if (event.runId) resolve(event.eventName);
+        if (
+          event.runId &&
+          (event.eventName === "run.completed" ||
+            event.eventName === "run.failed" ||
+            event.eventName === "run.cancelled")
+        )
+          resolve(event.eventName);
       }),
     );
     const first = createRuntime(temporary.database, firstEvents);
@@ -1375,7 +1393,14 @@ describe("AgentRuntime", () => {
     migrateDatabase(reopened);
     const events = new RuntimeEventBus();
     const terminal = new Promise<string>((resolve) =>
-      events.subscribe((event) => event.runId && resolve(event.eventName)),
+      events.subscribe(
+        (event) =>
+          event.runId &&
+          (event.eventName === "run.completed" ||
+            event.eventName === "run.failed" ||
+            event.eventName === "run.cancelled") &&
+          resolve(event.eventName),
+      ),
     );
     await makeRuntime(reopened, events).admit({
       session: { kind: "main", agentId: "primary" },
@@ -1457,7 +1482,13 @@ describe("AgentRuntime", () => {
     const terminal = new Promise<string>((resolve) =>
       events.subscribe((event) => {
         observed.push(event);
-        if (event.runId) resolve(event.eventName);
+        if (
+          event.runId &&
+          (event.eventName === "run.completed" ||
+            event.eventName === "run.failed" ||
+            event.eventName === "run.cancelled")
+        )
+          resolve(event.eventName);
       }),
     );
     const run = await build(reopened, events).admit({

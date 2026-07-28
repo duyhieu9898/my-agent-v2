@@ -10,6 +10,8 @@ import type { RuntimeEventBus } from "../../agents/runtime-events.js";
 import type { GatewayConnection } from "../connection.js";
 import type { RequestFrame, ResponseFrame } from "../protocol/schema/frames.js";
 
+import type { UsageBudgetGate } from "../../usage/usage-budget-gate.js";
+
 export type GatewayMethodDependencies = {
   sessions: SessionStore;
   sessionResolver: SessionResolver;
@@ -18,6 +20,7 @@ export type GatewayMethodDependencies = {
   runs?: RunStore;
   journal?: RunJournalStore;
   events?: RuntimeEventBus;
+  usageBudgetGate?: UsageBudgetGate;
 };
 
 export type GatewayMethodContext = {
