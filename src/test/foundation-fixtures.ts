@@ -4,11 +4,13 @@ import { join } from "node:path";
 
 import type { Clock } from "../core/clock.js";
 import {
+  createApprovalId,
   createAttemptId,
   createConnectionId,
   createModelCallId,
   createRunId,
   createSessionId,
+  createToolCallId,
   type IdFactory,
 } from "../core/identities.js";
 import {
@@ -88,6 +90,8 @@ export function createSequentialIdFactory(): IdFactory {
     nextAttemptId: () => createAttemptId(next()),
     nextModelCallId: () => createModelCallId(next()),
     nextConnectionId: () => createConnectionId(next()),
+    nextToolCallId: () => createToolCallId(`tcall_${next()}`),
+    nextApprovalId: () => createApprovalId(`appr_${next()}`),
   };
 }
 

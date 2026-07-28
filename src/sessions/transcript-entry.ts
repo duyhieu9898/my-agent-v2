@@ -8,6 +8,22 @@ export type TranscriptEntry =
       createdAt: string;
       continuationRequired?: boolean;
       modelCallId?: string;
+      toolCalls?: Array<{
+        id: string;
+        name: string;
+        arguments: Record<string, unknown>;
+      }>;
+    }
+  | {
+      type: "tool-call";
+      id: string;
+      parentId?: string;
+      modelCallId: string;
+      toolCallId: string;
+      toolName: string;
+      arguments: Record<string, unknown>;
+      ordinal: number;
+      createdAt: string;
     }
   | {
       type: "tool-result";
@@ -38,20 +54,20 @@ export type TranscriptAppendEntry = TranscriptEntry & {
 export function validateCompleteExchangeGroups(
   entries: readonly PersistedTranscriptEntry[],
 ): void {
-  let expectedRole: "user" | "assistant" = "user";
+  let expectedRole: "user" | "assistant" | "tool" = "user";
 
   for (const entry of entries) {
-    if (entry.type !== "message") {
-      continue;
+    if (entry.type === "message") {
+      if (entry.role === "user") {
+        expectedRole = "assistant";
+      } else {
+        expectedRole = "user";
+      }
+    } else if (entry.type === "tool-call") {
+      expectedRole = "tool";
+    } else if (entry.type === "tool-result") {
+      expectedRole = "user";
     }
-
-    if (entry.role !== expectedRole) {
-      throw new Error(
-        "Transcript exchange groups must alternate user and assistant",
-      );
-    }
-
-    expectedRole = expectedRole === "user" ? "assistant" : "user";
   }
 
   if (entries.length > 0 && expectedRole !== "user") {

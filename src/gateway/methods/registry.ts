@@ -17,6 +17,8 @@ import {
   handleSessionHistory,
 } from "./runs.js";
 
+import { handleApprovalResolve } from "./approval.js";
+
 export const gatewayMethodHandlers: Record<
   GatewayMethod,
   GatewayMethodHandler
@@ -33,4 +35,5 @@ export const gatewayMethodHandlers: Record<
   "session.history": handleSessionHistory,
   "run.journal": handleRunJournal,
   "run.usage": handleRunUsage,
+  "approval.resolve": handleApprovalResolve,
 };

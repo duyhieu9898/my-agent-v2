@@ -3,34 +3,44 @@ import { dirname } from "node:path";
 
 import { type Logger } from "pino";
 
-import type { AppConfig } from "../config/config.schema.js";
-import { createLogger } from "./create-logger.js";
-import { createGateway, type Gateway } from "../gateway/create-gateway.js";
-import { AgentRuntime } from "../agents/agent-runtime.js";
 import {
   AgentRegistry,
   type AgentDefinition,
 } from "../agents/agent-registry.js";
+import { AgentRuntime } from "../agents/agent-runtime.js";
+import { SqliteAttemptStore } from "../agents/attempt-store.js";
 import { BuiltinStepHarness } from "../agents/harness.js";
 import { HarnessRegistry } from "../agents/harness-registry.js";
-import { SqliteAttemptStore } from "../agents/attempt-store.js";
 import { SqliteRunJournalStore } from "../agents/run-journal-store.js";
 import { SqliteRunStore } from "../agents/run-store.js";
-import { StartupRunReconciler } from "../agents/startup-run-reconciler.js";
-import { RuntimeEventBus } from "../agents/runtime-events.js";
 import { RuntimeCapacity } from "../agents/runtime-capacity.js";
+import { RuntimeEventBus } from "../agents/runtime-events.js";
 import { SessionRunLaneCoordinator } from "../agents/session-run-lane.js";
+import { StartupRunReconciler } from "../agents/startup-run-reconciler.js";
+import type { AppConfig } from "../config/config.schema.js";
+import { randomIdFactory } from "../core/identities.js";
 import { UsageBudgetGate } from "../usage/usage-budget-gate.js";
+import { createGateway, type Gateway } from "../gateway/create-gateway.js";
 import {
   GeminiInteractionsProvider,
   type InteractionsClient,
 } from "../models/gemini-interactions-provider.js";
 import { HeuristicTokenEstimator } from "../models/token-estimator.js";
+import { ApprovalCoordinator } from "../policy/approval-coordinator.js";
+import { WorkspacePolicy } from "../policy/workspace-policy.js";
 import { SessionResolver } from "../sessions/session-resolver.js";
 import { SqliteSessionStore } from "../sessions/sqlite-session-store.js";
 import { SqliteTranscriptStore } from "../sessions/sqlite-transcript-store.js";
 import { openDatabase } from "../storage/database.js";
 import { migrateDatabase } from "../storage/migrate.js";
+import { ToolRegistry } from "../tools/tool-registry.js";
+import { ToolRuntime } from "../tools/tool-runtime.js";
+import {
+  workspaceListTool,
+  workspaceReadTextTool,
+  workspaceWriteTextTool,
+} from "../tools/workspace-tools.js";
+import { createLogger } from "./create-logger.js";
 
 export type App = {
   config: AppConfig;
@@ -41,24 +51,15 @@ export type App = {
   stop(): Promise<void>;
 };
 
-/**
- * Composition options. `geminiClient` is the only production-shaped injection
- * seam: when present the real provider is built with this client instead of a
- * real SDK client, enabling deterministic composed integration tests with no
- * network. The production default path is unchanged when it is absent.
- */
 export type CreateAppOptions = {
   geminiClient?: InteractionsClient;
 };
 
-/**
- * Build the single primary agent definition from operator configuration. The
- * estimator revision is read from the estimator instance so the manifest cannot
- * drift from the estimator actually in use.
- */
 function buildPrimaryDefinition(
   config: AppConfig,
   tokenEstimatorRevision: string,
+  toolRegistryFingerprint: string,
+  toolPolicyFingerprint: string,
 ): AgentDefinition {
   return {
     agentId: config.agent.defaultId,
@@ -69,11 +70,11 @@ function buildPrimaryDefinition(
     },
     harnessId: "builtin-step",
     promptProfile: "main-v1",
-    toolProfile: "none",
+    toolProfile: "workspace-tools-v1",
     memoryProfile: "none",
-    toolRegistryFingerprint: "none",
-    toolPolicyFingerprint: "none",
-    sandboxPolicyFingerprint: "none",
+    toolRegistryFingerprint,
+    toolPolicyFingerprint,
+    sandboxPolicyFingerprint: "host-workspace-v1",
     memoryPolicyFingerprint: "none",
     contextTokenBudget: config.agent.model.contextTokenBudget,
     tokenEstimatorRevision,
@@ -92,16 +93,38 @@ export function createApp(
   });
 
   const database = openDatabase(config.database.path);
-
   migrateDatabase(database);
 
   const tokenEstimator = new HeuristicTokenEstimator();
+
+  const toolRegistry = new ToolRegistry();
+  toolRegistry.register(workspaceListTool);
+  toolRegistry.register(workspaceReadTextTool);
+  toolRegistry.register(workspaceWriteTextTool);
+  toolRegistry.freeze();
+
+  const workspacePolicy = new WorkspacePolicy();
+  const approvalCoordinator = new ApprovalCoordinator(randomIdFactory);
+
+  const toolRuntime = new ToolRuntime(
+    toolRegistry,
+    workspacePolicy,
+    approvalCoordinator,
+  );
+
   const agentRegistry = new AgentRegistry([
-    buildPrimaryDefinition(config, tokenEstimator.revision),
+    buildPrimaryDefinition(
+      config,
+      tokenEstimator.revision,
+      toolRegistry.computeFingerprint(),
+      workspacePolicy.computeFingerprint(),
+    ),
   ]);
+
   const harnessRegistry = new HarnessRegistry([
     { id: "builtin-step", harness: new BuiltinStepHarness() },
   ]);
+
   const sessions = new SqliteSessionStore(database);
   const sessionResolver = new SessionResolver(sessions);
   const transcripts = new SqliteTranscriptStore(database);
@@ -140,13 +163,16 @@ export function createApp(
       outputMicrosPerMillionTokens: price.outputMicrosPerMillionTokens,
     })),
   );
+
   const startupReconciler = new StartupRunReconciler(runs, usageBudgetGate);
   const geminiApiKey =
     process.env[config.agent.model.geminiApiKeyEnvironmentVariable];
+
   if (config.nodeEnv !== "test" && !geminiApiKey && !options.geminiClient)
     throw new Error(
       `Missing Gemini credential: ${config.agent.model.geminiApiKeyEnvironmentVariable}`,
     );
+
   const provider =
     options.geminiClient || geminiApiKey
       ? new GeminiInteractionsProvider(
@@ -154,8 +180,10 @@ export function createApp(
           options.geminiClient,
         )
       : undefined;
+
   const journal = new SqliteRunJournalStore(database);
   const events = new RuntimeEventBus();
+
   const runtime = new AgentRuntime({
     sessions: sessionResolver,
     transcripts,
@@ -168,6 +196,10 @@ export function createApp(
     agentRegistry,
     harnessRegistry,
     tokenEstimator,
+    toolRuntime,
+    toolRegistry,
+    workspacePolicy,
+    workspaceRoot: config.workspaceDir,
     lanes: new SessionRunLaneCoordinator(
       config.runtime.perSessionQueueCapacity,
     ),
@@ -188,6 +220,7 @@ export function createApp(
       runs,
       journal,
       usageBudgetGate,
+      approvalCoordinator,
     },
   });
 
@@ -218,6 +251,7 @@ export function createApp(
     },
 
     async stop(): Promise<void> {
+      approvalCoordinator.dispose();
       await gateway.stop();
       database.close();
       logger.info("my-agent-v2 stopped");

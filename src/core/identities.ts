@@ -11,6 +11,8 @@ export type RunId = Brand<string, "RunId">;
 export type AttemptId = Brand<string, "AttemptId">;
 export type ModelCallId = Brand<string, "ModelCallId">;
 export type ConnectionId = Brand<string, "ConnectionId">;
+export type ToolCallId = Brand<string, "ToolCallId">;
+export type ApprovalId = Brand<string, "ApprovalId">;
 
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -54,12 +56,28 @@ export const createModelCallId = (value: string): ModelCallId =>
 export const createConnectionId = (value: string): ConnectionId =>
   requireUuid(value, "ConnectionId");
 
+export function createToolCallId(value: string): ToolCallId {
+  if (!value || typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("ToolCallId must be a non-empty string");
+  }
+  return value as ToolCallId;
+}
+
+export function createApprovalId(value: string): ApprovalId {
+  if (!value || typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("ApprovalId must be a non-empty string");
+  }
+  return value as ApprovalId;
+}
+
 export interface IdFactory {
   nextSessionId(): SessionId;
   nextRunId(): RunId;
   nextAttemptId(): AttemptId;
   nextModelCallId(): ModelCallId;
   nextConnectionId(): ConnectionId;
+  nextToolCallId(): ToolCallId;
+  nextApprovalId(): ApprovalId;
 }
 
 function nextUuid(): string {
@@ -72,4 +90,6 @@ export const randomIdFactory: IdFactory = {
   nextAttemptId: () => createAttemptId(nextUuid()),
   nextModelCallId: () => createModelCallId(nextUuid()),
   nextConnectionId: () => createConnectionId(nextUuid()),
+  nextToolCallId: () => createToolCallId(`tcall_${nextUuid()}`),
+  nextApprovalId: () => createApprovalId(`appr_${nextUuid()}`),
 };

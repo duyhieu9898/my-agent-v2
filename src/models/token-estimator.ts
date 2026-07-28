@@ -1,3 +1,5 @@
+import type { ModelTurn } from "./contracts.js";
+
 /**
  * Provider-neutral token estimation at the model/context boundary.
  *
@@ -12,7 +14,7 @@ export interface TokenEstimator {
   readonly revision: string;
   estimate(input: {
     instructions: readonly string[];
-    turns: readonly Readonly<{ role: "user" | "assistant"; text: string }>[];
+    turns: readonly ModelTurn[];
     continuations?: readonly Readonly<{ payload: Uint8Array }>[];
   }): bigint;
 }
@@ -32,14 +34,19 @@ export class HeuristicTokenEstimator implements TokenEstimator {
 
   public estimate(input: {
     instructions: readonly string[];
-    turns: readonly Readonly<{ role: "user" | "assistant"; text: string }>[];
+    turns: readonly ModelTurn[];
     continuations?: readonly Readonly<{ payload: Uint8Array }>[];
   }): bigint {
     let bytes = 0;
     for (const instruction of input.instructions)
       bytes += Buffer.byteLength(instruction, "utf8");
-    for (const turn of input.turns)
-      bytes += Buffer.byteLength(turn.text, "utf8");
+    for (const turn of input.turns) {
+      if (turn.text) bytes += Buffer.byteLength(turn.text, "utf8");
+      if (turn.toolCalls)
+        bytes += Buffer.byteLength(JSON.stringify(turn.toolCalls), "utf8");
+      if (turn.toolResults)
+        bytes += Buffer.byteLength(JSON.stringify(turn.toolResults), "utf8");
+    }
     for (const continuation of input.continuations ?? [])
       bytes += continuation.payload.length;
     return BigInt(

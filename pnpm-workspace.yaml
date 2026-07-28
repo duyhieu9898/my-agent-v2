@@ -3,8 +3,8 @@ packages:
   - packages/*
   - extensions/*
 allowBuilds:
-  '@google/genai': set this to true or false
+  "@google/genai": true
   better-sqlite3: true
   esbuild: true
-  protobufjs: set this to true or false
+  protobufjs: true
 minimumReleaseAge: 1440

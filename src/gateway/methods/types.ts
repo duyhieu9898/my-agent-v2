@@ -11,6 +11,7 @@ import type { GatewayConnection } from "../connection.js";
 import type { RequestFrame, ResponseFrame } from "../protocol/schema/frames.js";
 
 import type { UsageBudgetGate } from "../../usage/usage-budget-gate.js";
+import type { ApprovalCoordinator } from "../../policy/approval-coordinator.js";
 
 export type GatewayMethodDependencies = {
   sessions: SessionStore;
@@ -21,6 +22,7 @@ export type GatewayMethodDependencies = {
   journal?: RunJournalStore;
   events?: RuntimeEventBus;
   usageBudgetGate?: UsageBudgetGate;
+  approvalCoordinator?: ApprovalCoordinator;
 };
 
 export type GatewayMethodContext = {

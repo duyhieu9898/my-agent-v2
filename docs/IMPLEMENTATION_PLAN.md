@@ -2,8 +2,8 @@
 
 **Status:** Ready for execution
 **Architecture baseline:** `docs/ARCHITECTURE.md` and ADR 0001–0015
-**Active execution plan:** `docs/plans/active/0001-core-runtime-vertical-slice.md`
-**Last updated:** 2026-07-24
+**Active execution plan:** `docs/plans/active/0002-tool-runtime.md`
+**Last updated:** 2026-07-28
 
 ## 1. Purpose
 
@@ -61,16 +61,16 @@ Reserved module roots such as `src/agents/`, `src/context/`, `src/models/`, and 
 
 ## 4. V1 delivery sequence
 
-| Milestone | Outcome | Exit signal |
-|---|---|---|
-| **0 — Foundation hardening** | Existing repository foundation is understood, repeatable, and ready for durable runtime work. | Baseline and new foundation tests pass; startup, migrations, shutdown, IDs, errors, clocks, config, and logging have explicit ownership. |
-| **1 — Durable control plane** | Gateway can admit, serialize, inspect, and persist run/session evidence without a model call. | Same-session FIFO and different-session concurrency tests pass; transcript and journal survive restart. |
-| **2 — Model vertical slice** | One prompt reaches pinned Gemini through the host-owned runtime pipeline and commits a durable terminal result. | End-to-end prompt succeeds with transcript, journal, usage ledger, cancellation/failure behavior, and restart verification. |
-| **3 — Tool Runtime** | Model requests can execute policy-controlled host tools and continue through checkpoints. | Safe read-only tools and one controlled side-effect path pass lifecycle, policy, transcript, and retry tests. |
-| **4 — Browser Runtime** | Playwright/Chromium executes observe–act–observe operations through Tool Runtime. | Browser lifecycle, stale refs, artifacts, navigation policy, cancellation, and evidence tests pass. |
-| **5 — Context robustness** | Large tool-heavy histories are bounded predictably. | Source caps, soft pruning, exact preflight threshold, and overflow behavior pass structural tests. |
-| **6 — Curated memory** | Explicit cross-session memory is searchable and recallable. | SQLite FTS5, provenance, policy-controlled writes, snapshot recall, and prompt-section evidence pass. |
-| **7 — Control UI** | Local users can inspect and operate sessions, runs, usage, memory, and artifacts through Gateway APIs. | UI remains a pure Gateway client and all primary operational surfaces work. |
+| Milestone                     | Outcome                                                                                                         | Exit signal                                                                                                                              |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **0 — Foundation hardening**  | Existing repository foundation is understood, repeatable, and ready for durable runtime work.                   | Baseline and new foundation tests pass; startup, migrations, shutdown, IDs, errors, clocks, config, and logging have explicit ownership. |
+| **1 — Durable control plane** | Gateway can admit, serialize, inspect, and persist run/session evidence without a model call.                   | Same-session FIFO and different-session concurrency tests pass; transcript and journal survive restart.                                  |
+| **2 — Model vertical slice**  | One prompt reaches pinned Gemini through the host-owned runtime pipeline and commits a durable terminal result. | End-to-end prompt succeeds with transcript, journal, usage ledger, cancellation/failure behavior, and restart verification.              |
+| **3 — Tool Runtime**          | Model requests can execute policy-controlled host tools and continue through checkpoints.                       | Safe read-only tools and one controlled side-effect path pass lifecycle, policy, transcript, and retry tests.                            |
+| **4 — Browser Runtime**       | Playwright/Chromium executes observe–act–observe operations through Tool Runtime.                               | Browser lifecycle, stale refs, artifacts, navigation policy, cancellation, and evidence tests pass.                                      |
+| **5 — Context robustness**    | Large tool-heavy histories are bounded predictably.                                                             | Source caps, soft pruning, exact preflight threshold, and overflow behavior pass structural tests.                                       |
+| **6 — Curated memory**        | Explicit cross-session memory is searchable and recallable.                                                     | SQLite FTS5, provenance, policy-controlled writes, snapshot recall, and prompt-section evidence pass.                                    |
+| **7 — Control UI**            | Local users can inspect and operate sessions, runs, usage, memory, and artifacts through Gateway APIs.          | UI remains a pure Gateway client and all primary operational surfaces work.                                                              |
 
 Milestones 3–7 remain queued. Their detailed execution plans should be created only when the preceding milestone has validated its dependencies.
 

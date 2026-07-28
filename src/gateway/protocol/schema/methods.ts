@@ -21,6 +21,11 @@ import {
   SessionHistoryParamsSchema,
 } from "./runs.js";
 
+import {
+  ApprovalResolveParamsSchema,
+  ApprovalResolveResultSchema,
+} from "./approval.js";
+
 export const GatewayMethods = {
   connect: {
     params: ConnectParamsSchema,
@@ -60,6 +65,10 @@ export const GatewayMethods = {
   },
   "run.journal": { params: RunJournalParamsSchema, result: AnyResultSchema },
   "run.usage": { params: RunUsageParamsSchema, result: AnyResultSchema },
+  "approval.resolve": {
+    params: ApprovalResolveParamsSchema,
+    result: ApprovalResolveResultSchema,
+  },
 } as const;
 
 export type GatewayMethod = keyof typeof GatewayMethods;

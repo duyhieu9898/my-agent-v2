@@ -12,10 +12,31 @@ export type AppErrorCode =
   | "USAGE_RESERVATION_FAILED"
   | "MODEL_HISTORY_INCOMPATIBLE"
   | "HARNESS_NOT_FOUND"
-  | "CONTEXT_BUDGET_EXCEEDED";
+  | "CONTEXT_BUDGET_EXCEEDED"
+  | "TOOL_NOT_FOUND"
+  | "TOOL_ARGUMENTS_INVALID"
+  | "TOOL_POLICY_DENIED"
+  | "TOOL_APPROVAL_DENIED"
+  | "TOOL_APPROVAL_UNAVAILABLE"
+  | "TOOL_APPROVAL_EXPIRED"
+  | "TOOL_SANDBOX_UNAVAILABLE"
+  | "TOOL_EXECUTION_TIMEOUT"
+  | "TOOL_CANCELLED"
+  | "TOOL_IMPLEMENTATION_FAILED"
+  | "TOOL_OUTCOME_UNCERTAIN"
+  | "TOOL_RESULT_TOO_LARGE"
+  | "TOOL_BUDGET_EXHAUSTED"
+  | "TOOL_NO_PROGRESS";
 
 export type ErrorBoundary =
-  "domain" | "storage" | "gateway" | "provider" | "context" | "queue" | "usage";
+  | "domain"
+  | "storage"
+  | "gateway"
+  | "provider"
+  | "context"
+  | "queue"
+  | "usage"
+  | "tool";
 
 export type ErrorEnvelope = {
   code: AppErrorCode;
@@ -52,6 +73,7 @@ const boundaryDefaults: Record<ErrorBoundary, AppErrorCode> = {
   context: "CONTEXT_INVALID",
   queue: "SESSION_RUN_QUEUE_FULL",
   usage: "USAGE_RESERVATION_FAILED",
+  tool: "TOOL_IMPLEMENTATION_FAILED",
 };
 
 export function normalizeError(

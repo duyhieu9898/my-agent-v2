@@ -40,6 +40,7 @@ export class BuiltinStepHarness implements Harness {
         modelId: input.modelRoute.modelId,
         instructions: input.context.instructions,
         turns: input.context.turns,
+        ...(input.context.tools ? { tools: input.context.tools } : {}),
         continuations: input.context.continuations,
       },
       input.signal,

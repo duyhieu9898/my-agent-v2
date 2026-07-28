@@ -16,12 +16,12 @@ export type AgentResourceManifest = Readonly<{
   }>;
   harnessId: string;
   promptProfile: "main-v1";
-  toolProfile: "none";
-  memoryProfile: "none";
-  toolRegistryFingerprint: "none";
-  toolPolicyFingerprint: "none";
-  sandboxPolicyFingerprint: "none";
-  memoryPolicyFingerprint: "none";
+  toolProfile: "none" | "workspace-tools-v1" | (string & {});
+  memoryProfile: "none" | (string & {});
+  toolRegistryFingerprint: string;
+  toolPolicyFingerprint: string;
+  sandboxPolicyFingerprint: string;
+  memoryPolicyFingerprint: string;
   contextTokenBudget: number;
   tokenEstimatorRevision: string;
   availability: "ready";

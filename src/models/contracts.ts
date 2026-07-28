@@ -10,12 +10,38 @@ export type NormalizedModelUsage = Readonly<{
   measurement: "provider-exact" | "partial" | "unknown";
 }>;
 
+export type ModelToolDefinition = Readonly<{
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}>;
+
+export type ModelTurnToolCall = Readonly<{
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}>;
+
+export type ModelTurnToolResult = Readonly<{
+  id: string;
+  name: string;
+  result: unknown;
+}>;
+
+export type ModelTurn = Readonly<{
+  role: "user" | "assistant" | "tool";
+  text?: string;
+  toolCalls?: readonly ModelTurnToolCall[];
+  toolResults?: readonly ModelTurnToolResult[];
+}>;
+
 export type ModelRequest = Readonly<{
   modelCallId: string;
   providerId: "gemini-developer";
   modelId: "gemini-3.5-flash";
   instructions: readonly string[];
-  turns: readonly Readonly<{ role: "user" | "assistant"; text: string }>[];
+  turns: readonly ModelTurn[];
+  tools?: readonly ModelToolDefinition[];
   continuations?: readonly Readonly<{
     providerId: "gemini-developer";
     modelId: "gemini-3.5-flash";
@@ -25,8 +51,15 @@ export type ModelRequest = Readonly<{
   }>[];
 }>;
 
+export type ModelResultToolCall = Readonly<{
+  id?: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}>;
+
 export type ModelResult = Readonly<{
-  text: string;
+  text?: string;
+  toolCalls?: readonly ModelResultToolCall[];
   providerInteractionId?: string;
   usage: NormalizedModelUsage;
   billingCertainty: BillingCertainty;

@@ -1,33 +1,39 @@
+import { createHash } from "node:crypto";
+import { AppError } from "../core/errors.js";
+import type { ModelToolDefinition, ModelTurn } from "../models/contracts.js";
 import type { PersistedTranscriptEntry } from "../sessions/transcript-entry.js";
 import { validateCompleteExchangeGroups } from "../sessions/transcript-entry.js";
-import { AppError } from "../core/errors.js";
-import { createHash } from "node:crypto";
+import type { ToolDescriptor } from "../tools/contracts.js";
 
 export type ContextManifest = Readonly<{
   profile: "main-v1";
   sources: readonly Readonly<{
     id: string;
-    role: "user" | "assistant";
+    role: "user" | "assistant" | "tool";
     sequence: number;
     provenance: "local-transcript" | "run-input";
-    authority: "user" | "assistant";
+    authority: "user" | "assistant" | "system";
     trust: "direct";
     stability: "immutable";
     budgetClass: "required";
     bytes: number;
     hash: string;
   }>[];
+  toolsHash?: string;
 }>;
 
 export type PreparedModelContext = Readonly<{
   promptProfile: "main-v1";
   manifestHash: string;
   instructions: readonly string[];
-  turns: readonly Readonly<{ role: "user" | "assistant"; text: string }>[];
+  turns: readonly ModelTurn[];
+  tools?: readonly ModelToolDefinition[];
   manifest: ContextManifest;
   promptPlan: Readonly<{
     profile: "main-v1";
-    sections: readonly ("instructions" | "history" | "current-input")[];
+    sections: readonly (
+      "instructions" | "tools" | "history" | "current-input"
+    )[];
   }>;
   continuations: readonly Readonly<{
     providerId: "gemini-developer";
@@ -41,6 +47,7 @@ export type PreparedModelContext = Readonly<{
 export function prepareModelContext(input: {
   history: readonly PersistedTranscriptEntry[];
   input: string;
+  tools?: readonly ToolDescriptor[];
   continuations?: PreparedModelContext["continuations"];
   promptProfile?: "main-v1";
 }): PreparedModelContext {
@@ -54,39 +61,84 @@ export function prepareModelContext(input: {
       error,
     );
   }
-  const historyTurns = input.history
-    .filter(
-      (entry): entry is PersistedTranscriptEntry & { type: "message" } =>
-        entry.type === "message",
+
+  const turns: ModelTurn[] = [];
+
+  for (const entry of input.history) {
+    if (entry.type === "message") {
+      turns.push({
+        role: entry.role,
+        text: entry.text,
+      });
+    } else if (entry.type === "tool-call") {
+      turns.push({
+        role: "assistant",
+        toolCalls: [
+          {
+            id: entry.toolCallId,
+            name: entry.toolName,
+            arguments: entry.arguments,
+          },
+        ],
+      });
+    } else if (entry.type === "tool-result") {
+      turns.push({
+        role: "tool",
+        toolResults: [
+          {
+            id: entry.toolCallId,
+            name: entry.toolName,
+            result: entry.content,
+          },
+        ],
+      });
+    }
+  }
+
+  if (
+    input.input &&
+    !input.history.some(
+      (e) =>
+        e.type === "message" && e.role === "user" && e.text === input.input,
     )
-    .map((entry): { role: "user" | "assistant"; text: string } => ({
-      role: entry.role,
-      text: entry.text,
-    }));
-  const turns: ReadonlyArray<{ role: "user" | "assistant"; text: string }> = [
-    ...historyTurns,
-    { role: "user", text: input.input },
-  ];
+  ) {
+    turns.push({ role: "user", text: input.input });
+  }
+
+  const modelTools: ModelToolDefinition[] | undefined =
+    input.tools && input.tools.length > 0
+      ? input.tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          parameters: t.argumentSchema as Record<string, unknown>,
+        }))
+      : undefined;
+
+  const toolsHash = modelTools
+    ? createHash("sha256").update(JSON.stringify(modelTools)).digest("hex")
+    : undefined;
+
   const manifest: ContextManifest = Object.freeze({
     profile: "main-v1",
     sources: Object.freeze([
-      ...input.history
-        .filter(
-          (entry): entry is PersistedTranscriptEntry & { type: "message" } =>
-            entry.type === "message",
-        )
-        .map((entry) =>
-          source(
-            entry.id,
-            entry.role,
-            entry.sequence,
-            "local-transcript",
-            entry.text,
-          ),
+      ...input.history.map((entry) =>
+        source(
+          entry.id,
+          entry.type === "message"
+            ? entry.role
+            : entry.type === "tool-call"
+              ? "assistant"
+              : "tool",
+          entry.sequence,
+          "local-transcript",
+          JSON.stringify(entry),
         ),
+      ),
       source("run-input", "user", 0, "run-input", input.input),
     ]),
+    ...(toolsHash ? { toolsHash } : {}),
   });
+
   return Object.freeze({
     promptProfile,
     manifestHash: createHash("sha256")
@@ -94,11 +146,13 @@ export function prepareModelContext(input: {
       .digest("hex"),
     instructions: Object.freeze(["You are the primary my-agent-v2 assistant."]),
     turns: Object.freeze(turns),
+    ...(modelTools ? { tools: Object.freeze(modelTools) } : {}),
     manifest,
     promptPlan: Object.freeze({
       profile: promptProfile,
       sections: Object.freeze([
         "instructions" as const,
+        ...(modelTools ? ["tools" as const] : []),
         "history" as const,
         "current-input" as const,
       ]),
@@ -106,9 +160,10 @@ export function prepareModelContext(input: {
     continuations: Object.freeze([...(input.continuations ?? [])]),
   });
 }
+
 function source(
   id: string,
-  role: "user" | "assistant",
+  role: "user" | "assistant" | "tool",
   sequence: number,
   provenance: "local-transcript" | "run-input",
   text: string,
@@ -120,7 +175,12 @@ function source(
     provenance,
     bytes: Buffer.byteLength(text),
     hash: createHash("sha256").update(text).digest("hex"),
-    authority: role,
+    authority:
+      role === "user"
+        ? ("user" as const)
+        : role === "assistant"
+          ? ("assistant" as const)
+          : ("system" as const),
     trust: "direct" as const,
     stability: "immutable" as const,
     budgetClass: "required" as const,

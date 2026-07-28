@@ -28,4 +28,8 @@ decision into `docs/decisions/`; keep task-local choices in the plan.
 
 ## Active Plans
 
-No active execution plans are currently indexed.
+- [0002-tool-runtime.md](active/0002-tool-runtime.md)
+
+## Completed Plans
+
+- [0001-core-runtime-vertical-slice.md](file:///home/hieund/Downloads/my-agent-v2/docs/plans/completed/0001-core-runtime-vertical-slice.md)

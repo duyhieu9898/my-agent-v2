@@ -14,7 +14,7 @@ import type { TranscriptStore } from "./transcript-store.js";
 type TranscriptRow = {
   sequence: number;
   entry_id: string;
-  entry_type: "message" | "tool-result";
+  entry_type: "message" | "tool-call" | "tool-result";
   parent_id: string | null;
   role: "user" | "assistant" | null;
   text_content: string | null;
@@ -45,6 +45,25 @@ function mapEntry(row: TranscriptRow): PersistedTranscriptEntry {
       text: row.text_content,
       ...(row.continuation_required ? { continuationRequired: true } : {}),
       ...(row.model_call_id ? { modelCallId: row.model_call_id } : {}),
+    };
+  }
+
+  if (row.entry_type === "tool-call") {
+    if (!row.tool_call_id || !row.tool_name || row.tool_content_json === null) {
+      throw new AppError(
+        "STORAGE_UNAVAILABLE",
+        "Stored tool call is malformed",
+      );
+    }
+    const json = JSON.parse(row.tool_content_json);
+    return {
+      ...common,
+      type: "tool-call",
+      modelCallId: row.model_call_id ?? "",
+      toolCallId: row.tool_call_id,
+      toolName: row.tool_name,
+      arguments: json.arguments ?? {},
+      ordinal: json.ordinal ?? 0,
     };
   }
 
@@ -85,6 +104,22 @@ function entryColumns(entry: TranscriptEntry): {
       toolContentJson: null,
       continuationRequired: entry.continuationRequired ? 1 : 0,
       modelCallId: entry.modelCallId ?? null,
+    };
+  }
+  if (entry.type === "tool-call") {
+    return {
+      entryType: entry.type,
+      parentId: entry.parentId ?? null,
+      role: null,
+      textContent: null,
+      toolCallId: entry.toolCallId,
+      toolName: entry.toolName,
+      toolContentJson: JSON.stringify({
+        arguments: entry.arguments,
+        ordinal: entry.ordinal,
+      }),
+      continuationRequired: 0,
+      modelCallId: entry.modelCallId,
     };
   }
   return {
