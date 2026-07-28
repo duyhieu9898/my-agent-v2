@@ -13,6 +13,7 @@ import { SqliteRunJournalStore } from "../agents/run-journal-store.js";
 import { SqliteRunStore } from "../agents/run-store.js";
 import { RuntimeEventBus } from "../agents/runtime-events.js";
 import { SessionRunLaneCoordinator } from "../agents/session-run-lane.js";
+import { createRuntimeAuthority } from "../test/foundation-fixtures.js";
 import { createGateway, type Gateway } from "./create-gateway.js";
 
 const logger = pino({
@@ -91,6 +92,7 @@ describe("Gateway WebSocket", () => {
     const sessions = new SqliteSessionStore(database);
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(sessions),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),
@@ -171,6 +173,7 @@ describe("Gateway WebSocket", () => {
     const sessions = new SqliteSessionStore(database);
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(sessions),
       transcripts: {
         readPage: async () => ({ entries: [] }),
@@ -243,6 +246,7 @@ describe("Gateway WebSocket", () => {
     const sessions = new SqliteSessionStore(database);
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(sessions),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),
@@ -328,6 +332,7 @@ describe("Gateway WebSocket", () => {
     });
     let release: (() => void) | undefined;
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(sessions),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),

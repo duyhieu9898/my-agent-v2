@@ -47,6 +47,7 @@ describe("createApp", () => {
           providerId: "gemini-developer",
           modelId: "gemini-3.5-flash",
           geminiApiKeyEnvironmentVariable: "GEMINI_API_KEY",
+          contextTokenBudget: 12000,
         },
       },
       usage: {
@@ -88,6 +89,7 @@ describe("createApp", () => {
           providerId: "gemini-developer",
           modelId: "gemini-3.5-flash",
           geminiApiKeyEnvironmentVariable: "GEMINI_API_KEY",
+          contextTokenBudget: 12000,
         },
       },
       usage: {

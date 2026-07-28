@@ -7,7 +7,10 @@ import { SessionRunLaneCoordinator } from "../agents/session-run-lane.js";
 import { SessionResolver } from "../sessions/session-resolver.js";
 import { SqliteSessionStore } from "../sessions/sqlite-session-store.js";
 import { SqliteTranscriptStore } from "../sessions/sqlite-transcript-store.js";
-import { createTemporaryDatabase } from "../test/foundation-fixtures.js";
+import {
+  createRuntimeAuthority,
+  createTemporaryDatabase,
+} from "../test/foundation-fixtures.js";
 import { UsageBudgetGate } from "../usage/usage-budget-gate.js";
 import { openDatabase, type AppDatabase } from "../storage/database.js";
 import { migrateDatabase } from "../storage/migrate.js";
@@ -351,6 +354,7 @@ describe("GeminiInteractionsProvider", () => {
       return {
         terminal,
         runtime: new AgentRuntime({
+          ...createRuntimeAuthority(),
           sessions: new SessionResolver(new SqliteSessionStore(database)),
           transcripts: new SqliteTranscriptStore(database),
           runs: new SqliteRunStore(database),
@@ -424,6 +428,7 @@ describe("GeminiInteractionsProvider", () => {
         });
       });
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new SqliteTranscriptStore(database),
       runs: new SqliteRunStore(database),
@@ -492,6 +497,7 @@ describe("GeminiInteractionsProvider", () => {
       return {
         terminal,
         runtime: new AgentRuntime({
+          ...createRuntimeAuthority(),
           sessions: new SessionResolver(new SqliteSessionStore(database)),
           transcripts: new SqliteTranscriptStore(database),
           runs: new SqliteRunStore(database),

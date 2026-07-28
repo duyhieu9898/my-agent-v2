@@ -20,10 +20,11 @@ import {
   FinalizeStage,
   type StageResult,
 } from "./lifecycle.js";
-import { BuiltinStepHarness } from "./harness.js";
-import { AgentRegistry } from "./agent-registry.js";
+import type { AgentRegistry } from "./agent-registry.js";
+import type { HarnessRegistry } from "./harness-registry.js";
 import { prepareModelContext } from "../context/prepared-model-context.js";
 import { ModelProviderError, type ModelProvider } from "../models/contracts.js";
+import type { TokenEstimator } from "../models/token-estimator.js";
 import type { UsageBudgetGate } from "../usage/usage-budget-gate.js";
 
 export type RunRequest = {
@@ -63,17 +64,15 @@ export class AgentRuntime {
       execute?: (signal: AbortSignal) => Promise<void>;
       provider?: ModelProvider;
       usageBudgetGate?: UsageBudgetGate;
-      agentRegistry?: AgentRegistry;
+      agentRegistry: AgentRegistry;
+      harnessRegistry: HarnessRegistry;
+      tokenEstimator: TokenEstimator;
       lifecycleProbe?: RuntimeLifecycleProbe;
     },
   ) {}
   async admit(request: RunRequest): Promise<{ runId: string }> {
     const agentId = request.agentId ?? "primary";
-    if (agentId !== "primary" || request.session.agentId !== "primary")
-      throw new AppError("DOMAIN_VALIDATION_FAILED", "AGENT_NOT_FOUND");
-    const snapshot = (
-      this.dependencies.agentRegistry ?? new AgentRegistry()
-    ).resolve(agentId);
+    const snapshot = this.dependencies.agentRegistry.resolve(agentId);
     const session = await this.dependencies.sessions.resolve(request.session);
     const reservation = this.dependencies.lanes.reserve(
       `${agentId}:${session.key}`,
@@ -277,6 +276,19 @@ export class AgentRuntime {
           payload: {
             sessionId: session.sessionId,
             agentRevision: snapshot.agentRevision,
+            resourceManifestHash: snapshot.resourceManifestHash,
+            providerId: snapshot.modelRoute.providerId,
+            modelId: snapshot.modelRoute.modelId,
+            harnessId: snapshot.harnessId,
+            promptProfile: snapshot.promptProfile,
+            toolProfile: snapshot.toolProfile,
+            memoryProfile: snapshot.memoryProfile,
+            tokenEstimatorRevision: snapshot.tokenEstimatorRevision,
+            contextTokenBudget: snapshot.contextTokenBudget,
+            toolRegistryFingerprint: snapshot.toolRegistryFingerprint,
+            toolPolicyFingerprint: snapshot.toolPolicyFingerprint,
+            sandboxPolicyFingerprint: snapshot.sandboxPolicyFingerprint,
+            memoryPolicyFingerprint: snapshot.memoryPolicyFingerprint,
           },
           occurredAt: new Date().toISOString(),
         });
@@ -307,7 +319,7 @@ export class AgentRuntime {
               "Required provider continuation is missing",
             );
           if (!continuation) continue;
-          if (!isValidGeminiContinuation(continuation))
+          if (!isValidGeminiContinuation(continuation, snapshot.modelRoute))
             throw new AppError(
               "MODEL_HISTORY_INCOMPATIBLE",
               "Stored provider continuation is incompatible",
@@ -322,8 +334,8 @@ export class AgentRuntime {
               "Provider continuation model-call association is incompatible",
             );
           continuations.push({
-            providerId: "gemini-developer",
-            modelId: "gemini-3.5-flash",
+            providerId: snapshot.modelRoute.providerId,
+            modelId: snapshot.modelRoute.modelId,
             modelCallId: continuation.modelCallId,
             version: "gemini-thought-signature-v1",
             payload: continuation.payload,
@@ -335,11 +347,32 @@ export class AgentRuntime {
               "USAGE_RESERVATION_FAILED",
               "UsageBudgetGate is required for provider dispatch",
             );
+          // Resolve the harness from the snapshot before any model-call usage
+          // accounting: an unknown harness must fail typed with no reservation,
+          // dispatch marker, provider call, or usage settlement/release.
+          const harness = this.dependencies.harnessRegistry.resolve(
+            snapshot.harnessId,
+          );
           const context = prepareModelContext({
             history: page.entries,
             input: request.input,
             continuations,
+            promptProfile: snapshot.promptProfile,
           });
+          const contextTokens = this.dependencies.tokenEstimator.estimate({
+            instructions: context.instructions,
+            turns: context.turns,
+            continuations: context.continuations,
+          });
+          if (contextTokens > BigInt(snapshot.contextTokenBudget))
+            throw new AppError(
+              "CONTEXT_BUDGET_EXCEEDED",
+              "Estimated context tokens exceed the configured budget",
+              {
+                estimatedTokens: contextTokens.toString(),
+                contextTokenBudget: snapshot.contextTokenBudget,
+              },
+            );
           const modelCallId = randomIdFactory.nextModelCallId();
           assistantModelCallId = modelCallId;
           const usage = await this.dependencies.usageBudgetGate.reserve({
@@ -348,8 +381,8 @@ export class AgentRuntime {
             sessionId: session.sessionId,
             runId,
             attemptId: control.attemptId,
-            providerId: "gemini-developer",
-            modelId: "gemini-3.5-flash",
+            providerId: snapshot.modelRoute.providerId,
+            modelId: snapshot.modelRoute.modelId,
             estimatedTokens: BigInt(request.input.length),
             occurredAt: new Date().toISOString(),
           });
@@ -365,10 +398,11 @@ export class AgentRuntime {
           );
           try {
             const output = await this.withTimeout(
-              new BuiltinStepHarness().executeStep({
+              harness.executeStep({
                 provider: this.dependencies.provider,
                 modelCallId,
                 context,
+                modelRoute: snapshot.modelRoute,
                 signal: controller.signal,
               }),
               controller,
@@ -392,8 +426,8 @@ export class AgentRuntime {
             if (output.continuation)
               continuation = {
                 ...output.continuation,
-                providerId: "gemini-developer",
-                modelId: "gemini-3.5-flash",
+                providerId: snapshot.modelRoute.providerId,
+                modelId: snapshot.modelRoute.modelId,
                 modelCallId,
               };
             await this.dependencies.journal.append({
@@ -547,18 +581,21 @@ export class AgentRuntime {
   }
 }
 
-function isValidGeminiContinuation(value: {
-  version: string;
-  payload: Uint8Array;
-  providerId?: string;
-  modelId?: string;
-  modelCallId?: string;
-}): boolean {
+function isValidGeminiContinuation(
+  value: {
+    version: string;
+    payload: Uint8Array;
+    providerId?: string;
+    modelId?: string;
+    modelCallId?: string;
+  },
+  expectedRoute: { providerId: string; modelId: string },
+): boolean {
   if (
     value.version !== "gemini-thought-signature-v1" ||
     !value.payload.length ||
-    value.providerId !== "gemini-developer" ||
-    value.modelId !== "gemini-3.5-flash" ||
+    value.providerId !== expectedRoute.providerId ||
+    value.modelId !== expectedRoute.modelId ||
     !value.modelCallId
   )
     return false;

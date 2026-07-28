@@ -21,6 +21,7 @@ describe("loadConfig", () => {
       providerId: "gemini-developer",
       modelId: "gemini-3.5-flash",
       geminiApiKeyEnvironmentVariable: "MY_TEST_GEMINI_KEY",
+      contextTokenBudget: 12000,
     });
     expect(JSON.stringify(config)).not.toContain(
       "not-for-config-serialization",

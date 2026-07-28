@@ -11,7 +11,56 @@ import {
   createSessionId,
   type IdFactory,
 } from "../core/identities.js";
+import {
+  AgentRegistry,
+  type AgentDefinition,
+} from "../agents/agent-registry.js";
+import { BuiltinStepHarness } from "../agents/harness.js";
+import { HarnessRegistry } from "../agents/harness-registry.js";
+import { HeuristicTokenEstimator } from "../models/token-estimator.js";
 import { openDatabase, type AppDatabase } from "../storage/database.js";
+
+/**
+ * The default primary agent definition used by deterministic runtime fixtures.
+ * Mirrors the bootstrap-composed definition so tests exercise snapshot-driven
+ * execution without reintroducing production fallbacks.
+ */
+export const primaryAgentDefinition: AgentDefinition = {
+  agentId: "primary",
+  agentRevision: "primary-v1",
+  modelRoute: { providerId: "gemini-developer", modelId: "gemini-3.5-flash" },
+  harnessId: "builtin-step",
+  promptProfile: "main-v1",
+  toolProfile: "none",
+  memoryProfile: "none",
+  toolRegistryFingerprint: "none",
+  toolPolicyFingerprint: "none",
+  sandboxPolicyFingerprint: "none",
+  memoryPolicyFingerprint: "none",
+  contextTokenBudget: 12000,
+  tokenEstimatorRevision: "heuristic-v1",
+  availability: "ready",
+};
+
+/**
+ * Deterministic runtime authority dependencies (agent registry, harness
+ * registry, token estimator) for tests that construct `AgentRuntime` directly.
+ * Production composes equivalents in bootstrap; tests use this helper instead of
+ * a production fallback.
+ */
+export function createRuntimeAuthority(): {
+  agentRegistry: AgentRegistry;
+  harnessRegistry: HarnessRegistry;
+  tokenEstimator: HeuristicTokenEstimator;
+} {
+  return {
+    agentRegistry: new AgentRegistry([primaryAgentDefinition]),
+    harnessRegistry: new HarnessRegistry([
+      { id: "builtin-step", harness: new BuiltinStepHarness() },
+    ]),
+    tokenEstimator: new HeuristicTokenEstimator(),
+  };
+}
 
 export class FakeClock implements Clock {
   public constructor(private current: Date) {}

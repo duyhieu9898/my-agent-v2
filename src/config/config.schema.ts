@@ -63,6 +63,7 @@ export const configSchema = z.object({
         .string()
         .min(1)
         .default("GEMINI_API_KEY"),
+      contextTokenBudget: z.coerce.number().int().positive().default(12000),
     }),
   }),
 

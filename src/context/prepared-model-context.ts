@@ -42,7 +42,9 @@ export function prepareModelContext(input: {
   history: readonly PersistedTranscriptEntry[];
   input: string;
   continuations?: PreparedModelContext["continuations"];
+  promptProfile?: "main-v1";
 }): PreparedModelContext {
+  const promptProfile = input.promptProfile ?? "main-v1";
   try {
     validateCompleteExchangeGroups(input.history);
   } catch (error) {
@@ -86,7 +88,7 @@ export function prepareModelContext(input: {
     ]),
   });
   return Object.freeze({
-    promptProfile: "main-v1",
+    promptProfile,
     manifestHash: createHash("sha256")
       .update(JSON.stringify(manifest))
       .digest("hex"),
@@ -94,7 +96,7 @@ export function prepareModelContext(input: {
     turns: Object.freeze(turns),
     manifest,
     promptPlan: Object.freeze({
-      profile: "main-v1",
+      profile: promptProfile,
       sections: Object.freeze([
         "instructions" as const,
         "history" as const,

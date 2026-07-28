@@ -13,7 +13,10 @@ import { SqliteTranscriptStore } from "../sessions/sqlite-transcript-store.js";
 import { handleRunGet } from "../gateway/methods/runs.js";
 import { openDatabase, type AppDatabase } from "../storage/database.js";
 import { migrateDatabase } from "../storage/migrate.js";
-import { createTemporaryDatabase } from "../test/foundation-fixtures.js";
+import {
+  createRuntimeAuthority,
+  createTemporaryDatabase,
+} from "../test/foundation-fixtures.js";
 import { UsageBudgetGate } from "../usage/usage-budget-gate.js";
 
 let database: AppDatabase;
@@ -211,6 +214,7 @@ describe("StartupRunReconciler", () => {
       }),
     );
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(temporary.database)),
       transcripts: new SqliteTranscriptStore(temporary.database),
       runs: new SqliteRunStore(temporary.database, () => {
@@ -293,6 +297,7 @@ describe("StartupRunReconciler", () => {
       }),
     );
     const restartedRuntime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(reopened)),
       transcripts: new SqliteTranscriptStore(reopened),
       runs: reopenedRuns,

@@ -10,7 +10,9 @@ export type AppErrorCode =
   | "JOURNAL_CURSOR_INVALID"
   | "SESSION_RUN_QUEUE_FULL"
   | "USAGE_RESERVATION_FAILED"
-  | "MODEL_HISTORY_INCOMPATIBLE";
+  | "MODEL_HISTORY_INCOMPATIBLE"
+  | "HARNESS_NOT_FOUND"
+  | "CONTEXT_BUDGET_EXCEEDED";
 
 export type ErrorBoundary =
   "domain" | "storage" | "gateway" | "provider" | "context" | "queue" | "usage";

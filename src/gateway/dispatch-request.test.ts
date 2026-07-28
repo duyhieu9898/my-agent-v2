@@ -12,6 +12,7 @@ import { SqliteRunJournalStore } from "../agents/run-journal-store.js";
 import { SqliteRunStore } from "../agents/run-store.js";
 import { RuntimeEventBus } from "../agents/runtime-events.js";
 import { SessionRunLaneCoordinator } from "../agents/session-run-lane.js";
+import { createRuntimeAuthority } from "../test/foundation-fixtures.js";
 import type { GatewayConnection } from "./connection.js";
 import { dispatchRequest } from "./dispatch-request.js";
 
@@ -326,6 +327,7 @@ describe("dispatchRequest", () => {
       }),
     );
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: resolver,
       transcripts,
       runs,

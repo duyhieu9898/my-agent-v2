@@ -17,7 +17,15 @@ import { UsageBudgetGate } from "../usage/usage-budget-gate.js";
 import { toGatewayRuntimeEvent } from "../gateway/runtime-event-translation.js";
 import { ModelProviderError } from "../models/contracts.js";
 import { SqliteTranscriptStore } from "../sessions/sqlite-transcript-store.js";
-import { createTemporaryDatabase } from "../test/foundation-fixtures.js";
+import { AgentRegistry, type AgentDefinition } from "./agent-registry.js";
+import { BuiltinStepHarness } from "./harness.js";
+import { HarnessRegistry } from "./harness-registry.js";
+import { HeuristicTokenEstimator } from "../models/token-estimator.js";
+import {
+  createRuntimeAuthority,
+  createTemporaryDatabase,
+  primaryAgentDefinition,
+} from "../test/foundation-fixtures.js";
 
 function collectTerminalEvents(events: RuntimeEventBus): {
   terminal(runId: string): Promise<RuntimeEvent>;
@@ -161,6 +169,7 @@ function createSqliteRuntime(
   provider: FakeModelProvider,
 ): AgentRuntime {
   return new AgentRuntime({
+    ...createRuntimeAuthority(),
     sessions: new SessionResolver(new SqliteSessionStore(database)),
     transcripts: new SqliteTranscriptStore(database),
     runs: new SqliteRunStore(database),
@@ -393,6 +402,7 @@ describe("AgentRuntime", () => {
         const runs = new CountingRunStore(database);
         const attempts = new SqliteAttemptStore(database);
         const runtime = new AgentRuntime({
+          ...createRuntimeAuthority(),
           sessions: new SessionResolver(new SqliteSessionStore(database)),
           transcripts,
           runs,
@@ -459,6 +469,7 @@ describe("AgentRuntime", () => {
         }
       });
       const runtime = new AgentRuntime({
+        ...createRuntimeAuthority(),
         sessions: new SessionResolver(new SqliteSessionStore(database)),
         transcripts: new InMemoryTranscriptStore(),
         runs,
@@ -495,6 +506,7 @@ describe("AgentRuntime", () => {
         throw new Error("primary unavailable");
     });
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new InMemoryTranscriptStore(),
       runs,
@@ -542,6 +554,7 @@ describe("AgentRuntime", () => {
       throw new Error("storage unavailable");
     });
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new InMemoryTranscriptStore(),
       runs,
@@ -581,6 +594,7 @@ describe("AgentRuntime", () => {
     const events = new RuntimeEventBus();
     const runs = new CountingRunStore(database);
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new InMemoryTranscriptStore(),
       runs,
@@ -623,6 +637,7 @@ describe("AgentRuntime", () => {
     const transcripts = new InMemoryTranscriptStore();
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions,
       transcripts,
       runs: new SqliteRunStore(database),
@@ -651,6 +666,7 @@ describe("AgentRuntime", () => {
     const transcripts = new InMemoryTranscriptStore();
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions,
       transcripts,
       runs: new SqliteRunStore(database),
@@ -686,6 +702,7 @@ describe("AgentRuntime", () => {
     const transcripts = new InMemoryTranscriptStore();
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions,
       transcripts,
       runs: new SqliteRunStore(database),
@@ -728,6 +745,7 @@ describe("AgentRuntime", () => {
     });
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions,
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),
@@ -765,6 +783,7 @@ describe("AgentRuntime", () => {
 
   it("rejects explicitly unknown agents without fallback", async () => {
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),
@@ -795,6 +814,7 @@ describe("AgentRuntime", () => {
     );
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions,
       transcripts,
       runs: new SqliteRunStore(database),
@@ -836,6 +856,7 @@ describe("AgentRuntime", () => {
     );
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions,
       transcripts,
       runs: new SqliteRunStore(database),
@@ -878,6 +899,7 @@ describe("AgentRuntime", () => {
       readContinuation: async () => undefined,
     };
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts,
       runs: new SqliteRunStore(database),
@@ -907,6 +929,7 @@ describe("AgentRuntime", () => {
   it("does not publish provider success when its final transcript batch fails", async () => {
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: {
         readPage: async () => ({ entries: [] }),
@@ -953,6 +976,7 @@ describe("AgentRuntime", () => {
       usage: { measurement: "unknown" },
     });
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),
@@ -993,6 +1017,7 @@ describe("AgentRuntime", () => {
     };
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions,
       transcripts,
       runs: new SqliteRunStore(database),
@@ -1017,6 +1042,109 @@ describe("AgentRuntime", () => {
     expect((await runs.get(completed.runId))?.status).toBe("completed");
   });
 
+  it("fails an unknown harness before usage reservation, dispatch, and any provider call", async () => {
+    const events = new RuntimeEventBus();
+    const trace = createLifecycleTrace(events);
+    const provider = new FakeModelProvider({
+      text: "must not be used",
+      billingCertainty: "actual-known",
+      usage: { measurement: "unknown" },
+    });
+    // The resolved snapshot references a harness id that no registry holds.
+    const unknownHarnessDefinition: AgentDefinition = {
+      ...primaryAgentDefinition,
+      harnessId: "missing-harness",
+    };
+    const runs = new CountingRunStore(database);
+    const runtime = new AgentRuntime({
+      agentRegistry: new AgentRegistry([unknownHarnessDefinition]),
+      harnessRegistry: new HarnessRegistry([
+        { id: "builtin-step", harness: new BuiltinStepHarness() },
+      ]),
+      tokenEstimator: new HeuristicTokenEstimator(),
+      sessions: new SessionResolver(new SqliteSessionStore(database)),
+      transcripts: new SqliteTranscriptStore(database),
+      runs,
+      attempts: new SqliteAttemptStore(database),
+      journal: new SqliteRunJournalStore(database),
+      events,
+      lanes: new SessionRunLaneCoordinator(1),
+      provider,
+      usageBudgetGate: new UsageBudgetGate(database, [], []),
+      lifecycleProbe: trace.probe,
+    });
+    const admitted = await runtime.admit({
+      session: { kind: "main", agentId: "primary" },
+      input: "Question",
+    });
+    expect((await trace.terminal(admitted.runId)).eventName).toBe("run.failed");
+    await assertTerminalTrace(trace, events, runs, admitted.runId, {
+      decision: "fail",
+      durableStatus: "failed",
+      terminalEvent: "run.failed",
+    });
+    // Typed harness error is preserved through the terminal decision.
+    expect(
+      (await new SqliteRunStore(database).get(admitted.runId))?.terminalCode,
+    ).toBe("HARNESS_NOT_FOUND");
+    // Zero provider invocation.
+    expect(provider.requests).toHaveLength(0);
+    // No model-call usage side effects: no reservation, no usage.reserved
+    // journal event, no usage record, and no dispatch marker.
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM usage_reservations WHERE run_id = ?",
+        )
+        .get(admitted.runId),
+    ).toEqual({ count: 0 });
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM run_journal_entries WHERE run_id = ? AND event_name = 'usage.reserved'",
+        )
+        .get(admitted.runId),
+    ).toEqual({ count: 0 });
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM usage_records").get(),
+    ).toEqual({ count: 0 });
+    // No false assistant transcript was appended for the failed run.
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM transcript_entries WHERE role = 'assistant'",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+    // Finalization happened exactly once.
+    expect(runs.terminalTransitions).toBe(1);
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM run_journal_entries WHERE run_id = ? AND event_name = 'finalize.failed'",
+        )
+        .get(admitted.runId),
+    ).toEqual({ count: 1 });
+    // Lane released: a later admit on the same session is accepted once the
+    // failed run's drain completes. setImmediate yields deterministically until
+    // the lane's finally releases the active slot.
+    let secondRunId: string | undefined;
+    for (let i = 0; i < 200 && !secondRunId; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+      try {
+        const admitted2 = await runtime.admit({
+          session: { kind: "main", agentId: "primary" },
+          input: "b",
+        });
+        secondRunId = admitted2.runId;
+      } catch {
+        /* lane still draining the failed run */
+      }
+    }
+    expect(secondRunId).toBeDefined();
+    expect(secondRunId).not.toBe(admitted.runId);
+  });
+
   it("routes every fake provider call through a durable usage reservation", async () => {
     const transcripts = new InMemoryTranscriptStore();
     const provider = new FakeModelProvider({
@@ -1035,6 +1163,7 @@ describe("AgentRuntime", () => {
     });
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts,
       runs: new SqliteRunStore(database),
@@ -1101,6 +1230,7 @@ describe("AgentRuntime", () => {
     });
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts,
       runs: new SqliteRunStore(database),
@@ -1142,6 +1272,7 @@ describe("AgentRuntime", () => {
     });
     const createRuntime = (current: AppDatabase, events: RuntimeEventBus) =>
       new AgentRuntime({
+        ...createRuntimeAuthority(),
         sessions: new SessionResolver(new SqliteSessionStore(current)),
         transcripts: new SqliteTranscriptStore(current),
         runs: new SqliteRunStore(current),
@@ -1217,6 +1348,7 @@ describe("AgentRuntime", () => {
     });
     const makeRuntime = (current: AppDatabase, events: RuntimeEventBus) =>
       new AgentRuntime({
+        ...createRuntimeAuthority(),
         sessions: new SessionResolver(new SqliteSessionStore(current)),
         transcripts: new SqliteTranscriptStore(current),
         runs: new SqliteRunStore(current),
@@ -1291,6 +1423,7 @@ describe("AgentRuntime", () => {
     });
     const build = (current: AppDatabase, events: RuntimeEventBus) =>
       new AgentRuntime({
+        ...createRuntimeAuthority(),
         sessions: new SessionResolver(new SqliteSessionStore(current)),
         transcripts: new SqliteTranscriptStore(current),
         runs: new SqliteRunStore(current),
@@ -1386,6 +1519,7 @@ describe("AgentRuntime", () => {
     });
     const build = (current: AppDatabase, events: RuntimeEventBus) =>
       new AgentRuntime({
+        ...createRuntimeAuthority(),
         sessions: new SessionResolver(new SqliteSessionStore(current)),
         transcripts: new SqliteTranscriptStore(current),
         runs: new SqliteRunStore(current),
@@ -1509,6 +1643,7 @@ describe("AgentRuntime", () => {
     const events = new RuntimeEventBus();
     const terminalEvents = collectTerminalEvents(events);
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(reopened)),
       transcripts: new SqliteTranscriptStore(reopened),
       runs: new SqliteRunStore(reopened),
@@ -1579,6 +1714,7 @@ describe("AgentRuntime", () => {
     const events = new RuntimeEventBus();
     const terminalEvents = collectTerminalEvents(events);
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(reopened)),
       transcripts: new SqliteTranscriptStore(reopened),
       runs: new SqliteRunStore(reopened),
@@ -1910,6 +2046,7 @@ describe("AgentRuntime", () => {
   it("fails a model result that requires a missing continuation", async () => {
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),
@@ -1937,6 +2074,7 @@ describe("AgentRuntime", () => {
   it("fails a malformed required continuation", async () => {
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),
@@ -1966,6 +2104,7 @@ describe("AgentRuntime", () => {
     let calls = 0;
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),
@@ -2002,6 +2141,7 @@ describe("AgentRuntime", () => {
       throw new Error("settlement unavailable");
     };
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),
@@ -2051,6 +2191,7 @@ describe("AgentRuntime", () => {
     };
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),
@@ -2080,6 +2221,7 @@ describe("AgentRuntime", () => {
   it("releases usage when the provider proves rejection was not billable", async () => {
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),
@@ -2110,6 +2252,7 @@ describe("AgentRuntime", () => {
   it("releases usage on a provider rate-limit rejection before billable execution", async () => {
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),
@@ -2142,6 +2285,7 @@ describe("AgentRuntime", () => {
     const providerEntered = new Promise<void>((resolve) => (entered = resolve));
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),
@@ -2187,6 +2331,7 @@ describe("AgentRuntime", () => {
     let sawAbort = false;
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),
@@ -2233,6 +2378,7 @@ describe("AgentRuntime", () => {
     let first = true;
     const events = new RuntimeEventBus();
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions,
       transcripts,
       runs: new SqliteRunStore(database),
@@ -2272,6 +2418,7 @@ describe("AgentRuntime", () => {
       }
     }
     const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
       sessions: new SessionResolver(new SqliteSessionStore(database)),
       transcripts: new InMemoryTranscriptStore(),
       runs: new SqliteRunStore(database),

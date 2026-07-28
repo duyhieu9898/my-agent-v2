@@ -7,7 +7,7 @@ import {
   type ModelResult,
 } from "./contracts.js";
 
-type InteractionsClient = Pick<GoogleGenAI, "interactions">;
+export type InteractionsClient = Pick<GoogleGenAI, "interactions">;
 
 /** Gemini Developer API adapter. It intentionally owns the SDK boundary. */
 export class GeminiInteractionsProvider implements ModelProvider {
