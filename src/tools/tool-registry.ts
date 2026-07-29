@@ -3,15 +3,24 @@ import AjvModule from "ajv";
 import { AppError } from "../core/errors.js";
 import {
   canonicalJsonStringify,
-  deepFreeze,
+  strictJsonSnapshot,
   type ToolDescriptor,
+  type ToolExecutionContext,
+  type ToolRegistration,
 } from "./contracts.js";
 
 const Ajv = AjvModule.default ?? AjvModule;
 const ajv = new Ajv({ allErrors: true, strict: false });
 
 export class ToolRegistry {
-  private readonly tools = new Map<string, ToolDescriptor>();
+  private readonly descriptors = new Map<string, ToolDescriptor>();
+  private readonly implementations = new Map<
+    string,
+    {
+      execute: (args: any, context: ToolExecutionContext) => Promise<any>;
+      approvalSummaryRenderer: (args: any) => string;
+    }
+  >();
   private frozen = false;
   private cachedFingerprint: string | null = null;
   private readonly compiledSchemas = new Map<
@@ -22,7 +31,7 @@ export class ToolRegistry {
     }
   >();
 
-  public register(tool: ToolDescriptor): void {
+  public register(tool: ToolRegistration): void {
     if (this.frozen) {
       throw new AppError(
         "TOOL_IMPLEMENTATION_FAILED",
@@ -35,7 +44,7 @@ export class ToolRegistry {
         `Invalid tool name format '${tool.name}'. Must be lowercase dotted identity`,
       );
     }
-    if (this.tools.has(tool.name)) {
+    if (this.descriptors.has(tool.name)) {
       throw new AppError(
         "TOOL_IMPLEMENTATION_FAILED",
         `Tool '${tool.name}' is already registered`,
@@ -45,38 +54,36 @@ export class ToolRegistry {
     const argValidate = ajv.compile(tool.argumentSchema);
     const resValidate = ajv.compile(tool.resultSchema);
 
-    const metadata = JSON.parse(
-      JSON.stringify({
-        name: tool.name,
-        descriptorVersion: tool.descriptorVersion,
-        owningModule: tool.owningModule,
-        description: tool.description,
-        argumentSchema: tool.argumentSchema,
-        resultSchema: tool.resultSchema,
-        effectClassification: tool.effectClassification,
-        sensitivityClassification: tool.sensitivityClassification,
-        executionTarget: tool.executionTarget,
-        sandboxRequirement: tool.sandboxRequirement,
-        timeoutMs: tool.timeoutMs,
-        cancellationSupport: tool.cancellationSupport,
-        concurrencyTrait: tool.concurrencyTrait,
-        idempotencyTrait: tool.idempotencyTrait,
-        approvalSummaryRendererVersion:
-          tool.approvalSummaryRendererVersion ?? "1.0.0",
-        redactionRules: tool.redactionRules,
-        inputLimits: tool.inputLimits,
-        outputLimits: tool.outputLimits,
-        progressFingerprintVersion: tool.progressFingerprintVersion,
-      }),
-    );
+    const metadata: ToolDescriptor = {
+      name: tool.name,
+      descriptorVersion: tool.descriptorVersion,
+      owningModule: tool.owningModule,
+      description: tool.description,
+      argumentSchema: tool.argumentSchema,
+      resultSchema: tool.resultSchema,
+      effectClassification: tool.effectClassification,
+      sensitivityClassification: tool.sensitivityClassification,
+      executionTarget: tool.executionTarget,
+      sandboxRequirement: tool.sandboxRequirement,
+      timeoutMs: tool.timeoutMs,
+      cancellationSupport: tool.cancellationSupport,
+      concurrencyTrait: tool.concurrencyTrait,
+      idempotencyTrait: tool.idempotencyTrait,
+      approvalSummaryRendererVersion:
+        tool.approvalSummaryRendererVersion ?? "1.0.0",
+      redactionRules: tool.redactionRules,
+      inputLimits: tool.inputLimits,
+      outputLimits: tool.outputLimits,
+      progressFingerprintVersion: tool.progressFingerprintVersion,
+    };
 
-    const publishedDescriptor: ToolDescriptor = deepFreeze({
-      ...metadata,
+    const publishedDescriptor = strictJsonSnapshot(metadata);
+
+    this.descriptors.set(tool.name, publishedDescriptor);
+    this.implementations.set(tool.name, {
       execute: tool.execute,
       approvalSummaryRenderer: tool.approvalSummaryRenderer,
     });
-
-    this.tools.set(tool.name, publishedDescriptor);
     this.compiledSchemas.set(tool.name, { argValidate, resValidate });
     this.cachedFingerprint = null;
   }
@@ -91,15 +98,24 @@ export class ToolRegistry {
   }
 
   public get(name: string): ToolDescriptor | undefined {
-    return this.tools.get(name);
+    return this.descriptors.get(name);
   }
 
   public list(): ToolDescriptor[] {
-    return Array.from(this.tools.values());
+    return Array.from(this.descriptors.values());
+  }
+
+  public getInternalImplementation(name: string):
+    | {
+        execute: (args: any, context: ToolExecutionContext) => Promise<any>;
+        approvalSummaryRenderer: (args: any) => string;
+      }
+    | undefined {
+    return this.implementations.get(name);
   }
 
   public computeToolFingerprint(tool: ToolDescriptor): string {
-    const serializable = {
+    const serializable: ToolDescriptor = {
       name: tool.name,
       descriptorVersion: tool.descriptorVersion,
       owningModule: tool.owningModule,
@@ -131,9 +147,9 @@ export class ToolRegistry {
       return this.cachedFingerprint;
     }
 
-    const sortedToolNames = Array.from(this.tools.keys()).sort();
+    const sortedToolNames = Array.from(this.descriptors.keys()).sort();
     const hashes = sortedToolNames.map((name) => {
-      const tool = this.tools.get(name)!;
+      const tool = this.descriptors.get(name)!;
       return `${name}:${this.computeToolFingerprint(tool)}`;
     });
 
@@ -155,10 +171,16 @@ export class ToolRegistry {
       return { ok: false, error: `Unknown tool '${toolName}'` };
     }
 
-    const clonedArgs =
-      typeof args === "object" && args !== null
-        ? JSON.parse(JSON.stringify(args))
-        : args;
+    let clonedArgs: unknown;
+    try {
+      clonedArgs =
+        typeof args === "object" && args !== null
+          ? strictJsonSnapshot(args)
+          : args;
+    } catch (err: any) {
+      return { ok: false, error: err.message ?? "Invalid arguments" };
+    }
+
     const valid = schemas.argValidate(clonedArgs);
     if (!valid) {
       const errors =

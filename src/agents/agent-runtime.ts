@@ -868,6 +868,23 @@ export class AgentRuntime {
                 maxIterations: maxToolIterations,
               });
 
+              // Check invariant for admitted outcomes before transcript commit
+              for (const out of outcomes) {
+                if (!out.normalizedArguments) {
+                  const isUnadmitted =
+                    !out.ok &&
+                    out.terminalState === "failed-before-known-side-effect" &&
+                    (out.error?.code === "TOOL_NOT_FOUND" ||
+                      out.error?.code === "TOOL_ARGUMENTS_INVALID");
+                  if (!isUnadmitted) {
+                    throw new AppError(
+                      "TOOL_IMPLEMENTATION_FAILED",
+                      `Admitted tool outcome for '${out.toolName}' missing normalized arguments`,
+                    );
+                  }
+                }
+              }
+
               const batchEntries: TranscriptEntry[] = [];
               if (!userInputCommitted) {
                 batchEntries.push({
@@ -891,7 +908,7 @@ export class AgentRuntime {
                   modelCallId,
                   toolCallId: req.toolCallId,
                   toolName: req.toolName,
-                  arguments: out.normalizedArguments ?? req.rawArguments,
+                  arguments: out.normalizedArguments ?? {},
                   ordinal: req.ordinal,
                   createdAt: new Date().toISOString(),
                 });

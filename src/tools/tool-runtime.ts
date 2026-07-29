@@ -15,6 +15,7 @@ import type { WorkspacePolicy } from "../policy/workspace-policy.js";
 import {
   canonicalJsonStringify,
   deepFreeze,
+  strictJsonSnapshot,
   type NormalizedToolOutcome,
   type NormalizedToolRequest,
   type TerminalToolState,
@@ -190,9 +191,7 @@ export class ToolRuntime {
         continue;
       }
 
-      const normalizedArguments = deepFreeze(
-        JSON.parse(JSON.stringify(argVal.value)),
-      );
+      const normalizedArguments = strictJsonSnapshot(argVal.value);
 
       const argBytes = Buffer.byteLength(
         canonicalJsonStringify(normalizedArguments),
@@ -268,6 +267,28 @@ export class ToolRuntime {
         };
       }
 
+      const impl = this.registry.getInternalImplementation(req.toolName);
+      if (!impl) {
+        const err = new AppError(
+          "TOOL_NOT_FOUND",
+          `Tool implementation '${req.toolName}' is missing`,
+        );
+        this.emitEvent("tool.failed", runId, {
+          toolCallId: req.toolCallId,
+          data: { error: err.message, code: err.code },
+        });
+        return {
+          toolCallId: req.toolCallId,
+          toolName: req.toolName,
+          ordinal: req.ordinal,
+          terminalState: "failed-before-known-side-effect",
+          ok: false,
+          normalizedArguments,
+          error: { code: err.code, message: err.message },
+          durationMs: Date.now() - startTime,
+        };
+      }
+
       const polResult = await this.policy.evaluateInvocation(
         tool,
         normalizedArguments,
@@ -304,7 +325,7 @@ export class ToolRuntime {
       }
 
       if (polResult.decision === "require-approval") {
-        const actionSummary = tool.approvalSummaryRenderer(normalizedArguments);
+        const actionSummary = impl.approvalSummaryRenderer(normalizedArguments);
 
         const approvalStatus = await this.approvalCoordinator.requestApproval({
           agentId: batchContext.agentId,
@@ -318,11 +339,22 @@ export class ToolRuntime {
           normalizedArguments,
           workspaceRoot,
           executionTarget: tool.executionTarget,
-          sandboxProfile: tool.sandboxRequirement,
+          sandboxProfile: batchContext.sandboxProfile,
+          sandboxRequirement: tool.sandboxRequirement,
           actionSummary,
+          decision: polResult.decision,
           policyProfile: polResult.policyProfile,
           policyVersion: polResult.policyVersion,
           reason: polResult.reason,
+          ...(polResult.targetPath !== undefined
+            ? { targetPath: polResult.targetPath }
+            : {}),
+          ...(polResult.policyConstraints !== undefined
+            ? { policyConstraints: polResult.policyConstraints }
+            : {}),
+          ...(polResult.redactionMetadata !== undefined
+            ? { redactionMetadata: polResult.redactionMetadata }
+            : {}),
           timeoutMs: this.limits.approvalTimeoutMs,
           ...(signal ? { signal } : {}),
         });
@@ -370,6 +402,19 @@ export class ToolRuntime {
         }
 
         // Validate approval binding
+        const currentArgDigest =
+          this.approvalCoordinator.computeDigest(normalizedArguments);
+        const currentWorkspaceDigest =
+          this.approvalCoordinator.computeWorkspaceDigest(workspaceRoot);
+        const currentConstraintsDigest =
+          this.approvalCoordinator.computeCanonicalDigest(
+            polResult.policyConstraints,
+          );
+        const currentRedactionDigest =
+          this.approvalCoordinator.computeCanonicalDigest(
+            polResult.redactionMetadata,
+          );
+
         const validBinding =
           binding &&
           binding.agentId === batchContext.agentId &&
@@ -380,12 +425,19 @@ export class ToolRuntime {
           binding.modelCallId === batchContext.modelCallId &&
           binding.toolCallId === req.toolCallId &&
           binding.toolName === req.toolName &&
-          binding.normalizedArgumentDigest ===
-            this.approvalCoordinator.computeDigest(normalizedArguments) &&
-          binding.workspaceDigest ===
-            this.approvalCoordinator.computeWorkspaceDigest(workspaceRoot) &&
+          binding.normalizedArgumentDigest === currentArgDigest &&
+          binding.workspaceDigest === currentWorkspaceDigest &&
           binding.executionTarget === tool.executionTarget &&
-          binding.sandboxProfile === tool.sandboxRequirement;
+          binding.sandboxProfile === batchContext.sandboxProfile &&
+          binding.sandboxRequirement === tool.sandboxRequirement &&
+          binding.decision === polResult.decision &&
+          binding.policyProfile === polResult.policyProfile &&
+          binding.policyVersion === polResult.policyVersion &&
+          binding.reason === polResult.reason &&
+          (binding.targetPath === polResult.targetPath ||
+            (!binding.targetPath && !polResult.targetPath)) &&
+          binding.policyConstraintsDigest === currentConstraintsDigest &&
+          binding.redactionMetadataDigest === currentRedactionDigest;
 
         if (!validBinding) {
           const err = new AppError(
@@ -414,15 +466,31 @@ export class ToolRuntime {
           normalizedArguments,
           workspaceRoot,
         );
-        if (
-          recheckPolicy.decision === "deny" ||
-          recheckPolicy.policyProfile !== binding?.policyProfile ||
-          recheckPolicy.policyVersion !== binding?.policyVersion ||
-          recheckPolicy.reason !== binding?.reason
-        ) {
+
+        const recheckConstraintsDigest =
+          this.approvalCoordinator.computeCanonicalDigest(
+            recheckPolicy?.policyConstraints,
+          );
+        const recheckRedactionDigest =
+          this.approvalCoordinator.computeCanonicalDigest(
+            recheckPolicy?.redactionMetadata,
+          );
+
+        const recheckValid =
+          recheckPolicy &&
+          recheckPolicy.decision === "require-approval" &&
+          recheckPolicy.policyProfile === binding.policyProfile &&
+          recheckPolicy.policyVersion === binding.policyVersion &&
+          recheckPolicy.reason === binding.reason &&
+          (recheckPolicy.targetPath === binding.targetPath ||
+            (!recheckPolicy.targetPath && !binding.targetPath)) &&
+          recheckConstraintsDigest === binding.policyConstraintsDigest &&
+          recheckRedactionDigest === binding.redactionMetadataDigest;
+
+        if (!recheckValid) {
           const err = new AppError(
             "TOOL_POLICY_DENIED",
-            `Policy denied tool '${req.toolName}' on recheck: ${recheckPolicy.reason}`,
+            `Policy recheck failed for tool '${req.toolName}': decision changed or bound field mismatched`,
           );
           this.emitEvent("tool.failed", runId, {
             toolCallId: req.toolCallId,
@@ -453,7 +521,7 @@ export class ToolRuntime {
         inputLimits: tool.inputLimits,
         outputLimits: tool.outputLimits,
         policyConstraints: {},
-        sandboxProfile: tool.sandboxRequirement,
+        sandboxProfile: batchContext.sandboxProfile,
       };
 
       if (signal?.aborted) {
@@ -498,7 +566,7 @@ export class ToolRuntime {
         });
 
         const result = await Promise.race([
-          tool.execute(normalizedArguments, execContext),
+          impl.execute(normalizedArguments, execContext),
           timeoutPromise,
         ]).finally(() => {
           clearTimeout(timer!);

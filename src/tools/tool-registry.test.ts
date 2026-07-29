@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Type } from "typebox";
-import type { ToolDescriptor } from "./contracts.js";
+import type { ToolDescriptor, ToolRegistration } from "./contracts.js";
+import { canonicalJsonStringify, strictJsonSnapshot } from "./contracts.js";
 import { ToolRegistry } from "./tool-registry.js";
 import { workspaceListTool, workspaceReadTextTool } from "./workspace-tools.js";
 
@@ -40,7 +41,7 @@ describe("ToolRegistry", () => {
     // Create a mutable descriptor with nested schemas and rules
     const rawSchema = Type.Object({ path: Type.String() });
     const rawRedaction = ["secret_rule"];
-    const mutableDescriptor: ToolDescriptor = {
+    const mutableDescriptor: ToolRegistration = {
       ...workspaceListTool,
       name: "test.mutable",
       argumentSchema: rawSchema,
@@ -94,7 +95,7 @@ describe("ToolRegistry", () => {
 
   it("computes identical fingerprints for equivalent nested objects regardless of key insertion order", () => {
     const reg1 = new ToolRegistry();
-    const tool1: ToolDescriptor = {
+    const tool1: ToolRegistration = {
       ...workspaceListTool,
       name: "test.order1",
       argumentSchema: {
@@ -105,7 +106,7 @@ describe("ToolRegistry", () => {
     reg1.register(tool1);
 
     const reg2 = new ToolRegistry();
-    const tool2: ToolDescriptor = {
+    const tool2: ToolRegistration = {
       ...workspaceListTool,
       name: "test.order1",
       argumentSchema: {
@@ -123,7 +124,7 @@ describe("ToolRegistry", () => {
     reg1.register(workspaceListTool);
     const fp1 = reg1.computeFingerprint();
 
-    const modifiedTool1: ToolDescriptor = {
+    const modifiedTool1: ToolRegistration = {
       ...workspaceListTool,
       redactionRules: ["rule_1"],
     };
@@ -131,7 +132,7 @@ describe("ToolRegistry", () => {
     reg2.register(modifiedTool1);
     expect(reg2.computeFingerprint()).not.toBe(fp1);
 
-    const modifiedTool2: ToolDescriptor = {
+    const modifiedTool2: ToolRegistration = {
       ...workspaceListTool,
       approvalSummaryRendererVersion: "2.0.0",
     };
@@ -141,14 +142,14 @@ describe("ToolRegistry", () => {
   });
 
   it("ignores implementation function identity and renderer function identity when stable metadata is unchanged", () => {
-    const tool1: ToolDescriptor = {
+    const tool1: ToolRegistration = {
       ...workspaceListTool,
       approvalSummaryRendererVersion: "1.0.0",
       approvalSummaryRenderer: () => "Summary A",
       execute: async () => ({ value: 1 }),
     };
 
-    const tool2: ToolDescriptor = {
+    const tool2: ToolRegistration = {
       ...workspaceListTool,
       approvalSummaryRendererVersion: "1.0.0",
       approvalSummaryRenderer: () => "Summary B",
@@ -177,5 +178,81 @@ describe("ToolRegistry", () => {
       path: 123,
     });
     expect(invalidArgs.ok).toBe(false);
+  });
+
+  it("proves get() and list() do not expose executable or renderer functions, but internal registry operation retains execution authority", async () => {
+    const registry = new ToolRegistry();
+    let executed = false;
+
+    const tool: ToolRegistration = {
+      ...workspaceListTool,
+      name: "test.secret",
+      approvalSummaryRenderer: (args: any) => `Secret action: ${args.path}`,
+      execute: async () => {
+        executed = true;
+        return {
+          path: "secret",
+          entries: [],
+          returnedCount: 0,
+          hasMore: false,
+        };
+      },
+    };
+
+    registry.register(tool);
+
+    const getDescriptor = registry.get("test.secret")!;
+    expect((getDescriptor as any).execute).toBeUndefined();
+    expect((getDescriptor as any).approvalSummaryRenderer).toBeUndefined();
+
+    const listDescriptors = registry.list();
+    const item = listDescriptors.find((d) => d.name === "test.secret")!;
+    expect((item as any).execute).toBeUndefined();
+    expect((item as any).approvalSummaryRenderer).toBeUndefined();
+
+    const internalImpl = registry.getInternalImplementation("test.secret")!;
+    expect(internalImpl).toBeDefined();
+    expect(internalImpl.approvalSummaryRenderer({ path: "x" })).toBe(
+      "Secret action: x",
+    );
+
+    await internalImpl.execute({ path: "x" }, {} as any);
+    expect(executed).toBe(true);
+  });
+
+  it("strictly tests strictJsonSnapshot and canonicalJsonStringify requirements", () => {
+    // Rejections
+    expect(() => strictJsonSnapshot(undefined)).toThrow();
+    expect(() => strictJsonSnapshot({ a: undefined })).toThrow();
+    expect(() => strictJsonSnapshot(() => {})).toThrow();
+    expect(() => strictJsonSnapshot(Symbol("test"))).toThrow();
+    expect(() => strictJsonSnapshot(10n)).toThrow();
+    expect(() => strictJsonSnapshot(NaN)).toThrow();
+    expect(() => strictJsonSnapshot(Infinity)).toThrow();
+    expect(() => strictJsonSnapshot(-Infinity)).toThrow();
+
+    const cyclic: any = {};
+    cyclic.self = cyclic;
+    expect(() => strictJsonSnapshot(cyclic)).toThrow();
+
+    class CustomClass {}
+    expect(() => strictJsonSnapshot(new CustomClass())).toThrow();
+
+    // Canonical key sorting & array order preservation
+    const objA = { b: 2, a: 1, nested: { z: 10, y: 5 } };
+    const objB = { nested: { y: 5, z: 10 }, a: 1, b: 2 };
+    expect(canonicalJsonStringify(objA)).toBe(canonicalJsonStringify(objB));
+
+    const arr = [3, 1, 2];
+    const snapshotArr = strictJsonSnapshot(arr);
+    expect(snapshotArr).toEqual([3, 1, 2]);
+    expect(Object.isFrozen(snapshotArr)).toBe(true);
+
+    const validData = { x: [1, 2, { y: "hello" }] };
+    const snapshotData = strictJsonSnapshot(validData);
+    expect(Object.isFrozen(snapshotData)).toBe(true);
+    expect(Object.isFrozen(snapshotData.x)).toBe(true);
+    expect(Object.isFrozen(snapshotData.x[2])).toBe(true);
+    expect(snapshotData).not.toBe(validData); // detached
   });
 });

@@ -21,6 +21,9 @@ import { AgentRegistry, type AgentDefinition } from "./agent-registry.js";
 import { BuiltinStepHarness } from "./harness.js";
 import { HarnessRegistry } from "./harness-registry.js";
 import { HeuristicTokenEstimator } from "../models/token-estimator.js";
+import { ToolRegistry } from "../tools/tool-registry.js";
+import { workspaceWriteTextTool } from "../tools/workspace-tools.js";
+import { WorkspacePolicy } from "../policy/workspace-policy.js";
 import {
   createRuntimeAuthority,
   createTemporaryDatabase,
@@ -2469,5 +2472,128 @@ describe("AgentRuntime", () => {
     expect(
       (await new SqliteRunStore(database).get(admitted.runId))?.status,
     ).toBe("failed");
+  });
+
+  it("proves Agent Runtime writes tool-call transcript exclusively from normalized outcome arguments and fails closed if missing", async () => {
+    const sessions = new SessionResolver(new SqliteSessionStore(database));
+    const transcripts = new InMemoryTranscriptStore();
+    const events = new RuntimeEventBus();
+    const registry = new ToolRegistry();
+    registry.register(workspaceWriteTextTool);
+    registry.freeze();
+
+    let fakeOutcomes: any[] | undefined;
+
+    const mockToolRuntime: any = {
+      onEvent: () => () => {},
+      executeBatch: async () => {
+        if (fakeOutcomes) return fakeOutcomes;
+        return [
+          {
+            toolCallId: "tcall_test_1",
+            toolName: "workspace.write_text",
+            ordinal: 1,
+            terminalState: "completed",
+            ok: true,
+            normalizedArguments: {
+              path: "a.txt",
+              content: "norm",
+              mode: "create",
+            },
+            result: { bytesWritten: 4 },
+            durationMs: 10,
+          },
+        ];
+      },
+    };
+
+    const provider = new FakeModelProvider({
+      text: "calling tool",
+      toolCalls: [
+        {
+          id: "call_1",
+          name: "workspace.write_text",
+          arguments: { path: "a.txt", content: "raw", mode: "create" },
+        },
+      ],
+      usage: {
+        providerTotalTokens: 10n,
+        inputTokens: 5n,
+        outputTokens: 5n,
+        measurement: "provider-exact",
+      },
+      billingCertainty: "actual-known",
+    });
+
+    const runtime = new AgentRuntime({
+      ...createRuntimeAuthority(),
+      sessions,
+      transcripts,
+      runs: new SqliteRunStore(database),
+      journal: new SqliteRunJournalStore(database),
+      events,
+      lanes: new SessionRunLaneCoordinator(1),
+      provider,
+      usageBudgetGate: new UsageBudgetGate(database, [], []),
+      toolRuntime: mockToolRuntime,
+      toolRegistry: registry,
+      workspacePolicy: new WorkspacePolicy(),
+      workspaceRoot: process.cwd(),
+    });
+
+    const run = await runtime.admit({
+      session: { kind: "main", agentId: "primary" },
+      input: "Write file",
+    });
+
+    await terminalFor(events, run.runId);
+
+    const session = await sessions.resolve({
+      kind: "main",
+      agentId: "primary",
+    });
+    const page = await transcripts.readPage(session.sessionId, { limit: 100 });
+    const toolCallEntry = page.entries.find(
+      (e) => e.type === "tool-call",
+    ) as any;
+    expect(toolCallEntry).toBeDefined();
+    expect(toolCallEntry.arguments).toEqual({
+      path: "a.txt",
+      content: "norm",
+      mode: "create",
+    }); // equal to normalized, NOT raw "raw"
+
+    // Now test invariant failure path: admitted outcome missing normalizedArguments
+    fakeOutcomes = [
+      {
+        toolCallId: "tcall_test_2",
+        toolName: "workspace.write_text",
+        ordinal: 1,
+        terminalState: "completed",
+        ok: true,
+        // missing normalizedArguments!
+        result: { bytesWritten: 4 },
+        durationMs: 10,
+      },
+    ];
+
+    const initialEntriesCount = page.entries.length;
+
+    const badRun = await runtime.admit({
+      session: { kind: "main", agentId: "primary" },
+      input: "Bad tool run",
+    });
+
+    const badTerminal = await terminalFor(events, badRun.runId);
+    expect(badTerminal.eventName).toBe("run.failed");
+
+    const pageAfterBad = await transcripts.readPage(session.sessionId, {
+      limit: 100,
+    });
+    // No new tool-call or tool-result transcript batch committed in invariant failure path!
+    const newToolCalls = pageAfterBad.entries.filter(
+      (e, idx) => idx >= initialEntriesCount && e.type === "tool-call",
+    );
+    expect(newToolCalls).toHaveLength(0);
   });
 });

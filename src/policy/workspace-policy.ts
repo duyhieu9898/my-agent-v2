@@ -12,6 +12,8 @@ export interface InvocationPolicyResult {
   policyProfile: string;
   policyVersion: string;
   targetPath?: string;
+  policyConstraints?: Record<string, unknown>;
+  redactionMetadata?: Record<string, unknown>;
 }
 
 export class WorkspacePolicy {
@@ -54,6 +56,8 @@ export class WorkspacePolicy {
     const baseResult = {
       policyProfile: this.profile,
       policyVersion: this.version,
+      policyConstraints: {},
+      redactionMetadata: {},
     };
 
     const targetPath = rawArgs["path"];

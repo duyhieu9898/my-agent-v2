@@ -29,12 +29,17 @@ export interface ApprovalRequestBinding {
   workspaceDigest: string;
   executionTarget: string;
   sandboxProfile: string;
+  sandboxRequirement: string;
   actionSummary: string;
   createdAt: number;
   expiresAt: number;
+  decision: string;
   policyProfile: string;
   policyVersion: string;
   reason: string;
+  targetPath?: string;
+  policyConstraintsDigest: string;
+  redactionMetadataDigest: string;
 }
 
 export type ApprovalDecision = "allow-once" | "deny";
@@ -84,6 +89,12 @@ export class ApprovalCoordinator {
     return createHash("sha256").update(canonical).digest("hex");
   }
 
+  public computeCanonicalDigest(val: unknown): string {
+    const safeVal = val ?? {};
+    const canonical = canonicalJsonStringify(safeVal);
+    return createHash("sha256").update(canonical).digest("hex");
+  }
+
   public computeWorkspaceDigest(workspaceRoot?: string): string {
     const canonical = path.resolve(workspaceRoot ?? process.cwd());
     return createHash("sha256").update(canonical).digest("hex");
@@ -113,15 +124,19 @@ export class ApprovalCoordinator {
     modelCallId: ModelCallId;
     toolCallId: ToolCallId;
     toolName: string;
-    normalizedArguments?: Record<string, unknown>;
-    rawArguments?: Record<string, unknown>;
-    workspaceRoot?: string;
+    normalizedArguments: Record<string, unknown>;
+    workspaceRoot: string;
     executionTarget: string;
     sandboxProfile: string;
+    sandboxRequirement: string;
     actionSummary: string;
+    decision: string;
     policyProfile: string;
     policyVersion?: string;
     reason: string;
+    targetPath?: string;
+    policyConstraints?: Record<string, unknown>;
+    redactionMetadata?: Record<string, unknown>;
     timeoutMs?: number;
     signal?: AbortSignal;
   }): Promise<ApprovalResolutionStatus> {
@@ -129,10 +144,14 @@ export class ApprovalCoordinator {
     const now = Date.now();
     const timeoutMs = params.timeoutMs ?? this.defaultTimeoutMs;
     const expiresAt = now + timeoutMs;
-    const normalizedArgs =
-      params.normalizedArguments ?? params.rawArguments ?? {};
-    const digest = this.computeDigest(normalizedArgs);
+    const digest = this.computeDigest(params.normalizedArguments);
     const workspaceDigest = this.computeWorkspaceDigest(params.workspaceRoot);
+    const policyConstraintsDigest = this.computeCanonicalDigest(
+      params.policyConstraints,
+    );
+    const redactionMetadataDigest = this.computeCanonicalDigest(
+      params.redactionMetadata,
+    );
 
     const binding: ApprovalRequestBinding = deepFreeze({
       approvalId,
@@ -148,12 +167,19 @@ export class ApprovalCoordinator {
       workspaceDigest,
       executionTarget: params.executionTarget,
       sandboxProfile: params.sandboxProfile,
+      sandboxRequirement: params.sandboxRequirement,
       actionSummary: params.actionSummary,
       createdAt: now,
       expiresAt,
+      decision: params.decision,
       policyProfile: params.policyProfile,
       policyVersion: params.policyVersion ?? "1.0.0",
       reason: params.reason,
+      ...(params.targetPath !== undefined
+        ? { targetPath: params.targetPath }
+        : {}),
+      policyConstraintsDigest,
+      redactionMetadataDigest,
     });
 
     this.bindings.set(approvalId, binding);

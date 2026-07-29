@@ -11,9 +11,10 @@ import {
   WorkspaceWriteTextResultSchema,
   type ToolDescriptor,
   type ToolExecutionContext,
+  type ToolRegistration,
 } from "./contracts.js";
 
-export const workspaceListTool: ToolDescriptor = {
+export const workspaceListTool: ToolRegistration = {
   name: "workspace.list",
   descriptorVersion: "1.0.0",
   owningModule: "workspace-tools",
@@ -80,7 +81,7 @@ export const workspaceListTool: ToolDescriptor = {
   },
 };
 
-export const workspaceReadTextTool: ToolDescriptor = {
+export const workspaceReadTextTool: ToolRegistration = {
   name: "workspace.read_text",
   descriptorVersion: "1.0.0",
   owningModule: "workspace-tools",
@@ -170,7 +171,7 @@ export const workspaceReadTextTool: ToolDescriptor = {
   },
 };
 
-export const workspaceWriteTextTool: ToolDescriptor = {
+export const workspaceWriteTextTool: ToolRegistration = {
   name: "workspace.write_text",
   descriptorVersion: "1.0.0",
   owningModule: "workspace-tools",

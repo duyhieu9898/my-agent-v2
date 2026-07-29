@@ -1,3 +1,4 @@
+import { AppError } from "../core/errors.js";
 import { Type, type TSchema } from "typebox";
 import type {
   AgentId,
@@ -26,7 +27,7 @@ export interface ToolExecutionContext {
   sandboxProfile: string;
 }
 
-export interface ToolDescriptor<TArgs = any, TResult = any> {
+export interface ToolDescriptor {
   name: string;
   descriptorVersion: string;
   owningModule: string;
@@ -42,11 +43,17 @@ export interface ToolDescriptor<TArgs = any, TResult = any> {
   concurrencyTrait: ToolConcurrencyTrait;
   idempotencyTrait: boolean;
   approvalSummaryRendererVersion?: string;
-  approvalSummaryRenderer: (args: TArgs) => string;
   redactionRules: string[];
   inputLimits: { maxBytes?: number };
   outputLimits: { maxBytes?: number };
   progressFingerprintVersion: string;
+}
+
+export interface ToolRegistration<
+  TArgs = any,
+  TResult = any,
+> extends ToolDescriptor {
+  approvalSummaryRenderer: (args: TArgs) => string;
   execute: (args: TArgs, context: ToolExecutionContext) => Promise<TResult>;
 }
 
@@ -70,14 +77,97 @@ export function deepFreeze<T>(obj: T): T {
   return obj;
 }
 
-export function canonicalJsonStringify(val: unknown): string {
-  if (
-    val === undefined ||
-    typeof val === "function" ||
-    typeof val === "symbol"
-  ) {
-    throw new Error(`Unsupported non-JSON value: ${String(val)}`);
+export function strictJsonSnapshot<T>(
+  val: T,
+  seen: WeakSet<object> = new WeakSet(),
+): T {
+  if (val === null) {
+    return null as T;
   }
+  const type = typeof val;
+  if (type === "boolean" || type === "string") {
+    return val;
+  }
+  if (type === "number") {
+    if (!Number.isFinite(val as number)) {
+      throw new AppError(
+        "TOOL_ARGUMENTS_INVALID",
+        `Non-finite number '${String(val)}' is rejected in strict JSON`,
+      );
+    }
+    return val;
+  }
+  if (
+    type === "undefined" ||
+    type === "symbol" ||
+    type === "function" ||
+    type === "bigint"
+  ) {
+    throw new AppError(
+      "TOOL_ARGUMENTS_INVALID",
+      `Type '${type}' is rejected in strict JSON`,
+    );
+  }
+  if (type === "object") {
+    if (seen.has(val as unknown as object)) {
+      throw new AppError(
+        "TOOL_ARGUMENTS_INVALID",
+        "Cyclic object references are rejected in strict JSON",
+      );
+    }
+    seen.add(val as unknown as object);
+
+    try {
+      if (Array.isArray(val)) {
+        const clonedArr = val.map((item) => strictJsonSnapshot(item, seen));
+        return Object.freeze(clonedArr) as unknown as T;
+      }
+
+      const proto = Object.getPrototypeOf(val);
+      if (proto !== null && proto !== Object.prototype) {
+        throw new AppError(
+          "TOOL_ARGUMENTS_INVALID",
+          "Non-plain mutable class instances are rejected in strict JSON",
+        );
+      }
+
+      if (Object.getOwnPropertySymbols(val as object).length > 0) {
+        throw new AppError(
+          "TOOL_ARGUMENTS_INVALID",
+          "Symbol object keys are rejected in strict JSON",
+        );
+      }
+
+      const keys = Object.keys(val as object);
+      const clonedObj: Record<string, unknown> = {};
+      for (const k of keys) {
+        const propVal = (val as any)[k];
+        if (propVal === undefined) {
+          throw new AppError(
+            "TOOL_ARGUMENTS_INVALID",
+            `Property '${k}' with value 'undefined' is rejected in strict JSON`,
+          );
+        }
+        clonedObj[k] = strictJsonSnapshot(propVal, seen);
+      }
+      return Object.freeze(clonedObj) as unknown as T;
+    } finally {
+      seen.delete(val as unknown as object);
+    }
+  }
+
+  throw new AppError(
+    "TOOL_ARGUMENTS_INVALID",
+    `Unsupported value '${String(val)}' in strict JSON`,
+  );
+}
+
+export function canonicalJsonStringify(val: unknown): string {
+  const snapshot = strictJsonSnapshot(val);
+  return stringifyCanonical(snapshot);
+}
+
+function stringifyCanonical(val: unknown): string {
   if (
     val === null ||
     typeof val === "boolean" ||
@@ -87,18 +177,20 @@ export function canonicalJsonStringify(val: unknown): string {
     return JSON.stringify(val);
   }
   if (Array.isArray(val)) {
-    const elements = val.map((item) => canonicalJsonStringify(item));
-    return `[${elements.join(",")}]`;
+    return `[${val.map(stringifyCanonical).join(",")}]`;
   }
   if (typeof val === "object") {
-    const keys = Object.keys(val).sort();
+    const keys = Object.keys(val as Record<string, unknown>).sort();
     const entries = keys.map(
       (key) =>
-        `${JSON.stringify(key)}:${canonicalJsonStringify((val as any)[key])}`,
+        `${JSON.stringify(key)}:${stringifyCanonical((val as any)[key])}`,
     );
     return `{${entries.join(",")}}`;
   }
-  throw new Error(`Unsupported JSON value: ${String(val)}`);
+  throw new AppError(
+    "TOOL_ARGUMENTS_INVALID",
+    `Unsupported JSON value: ${String(val)}`,
+  );
 }
 
 export type TerminalToolState =
