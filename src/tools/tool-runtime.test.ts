@@ -13,6 +13,7 @@ import {
   createToolCallId,
 } from "../core/identities.js";
 import { ApprovalCoordinator } from "../policy/approval-coordinator.js";
+import type { ApprovalRequestBinding } from "../policy/approval-coordinator.js";
 import { WorkspacePolicy } from "../policy/workspace-policy.js";
 import { createSequentialIdFactory } from "../test/foundation-fixtures.js";
 import type {
@@ -217,6 +218,97 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
   });
 
   describe("M3-R3A workspace policy containment", () => {
+    it("binds normalized side-effect targetPath through approval and execution", async () => {
+      const tempWorkspace = createTempWorkspace();
+      const escapePath = path.join(
+        path.dirname(tempWorkspace.workspaceRoot),
+        "m3-r3ae-escape.txt",
+      );
+      const { runtime, approvalCoordinator, batchContext } = setupTestRuntime(
+        tempWorkspace.workspaceRoot,
+      );
+      const events: string[] = [];
+      let approvalRequests = 0;
+      let capturedBinding: ApprovalRequestBinding | undefined;
+      const rawArguments: Record<string, unknown> = {
+        path: "sub/../safe.txt",
+        content: "normalized target",
+        mode: "create",
+      };
+      runtime.onEvent((event) => events.push(event.type));
+      approvalCoordinator.onRequest((binding) => {
+        approvalRequests++;
+        capturedBinding = binding;
+        approvalCoordinator.resolveApproval(
+          binding.approvalId,
+          batchContext.runId,
+          "allow-once",
+        );
+      });
+      try {
+        expect(
+          fs.existsSync(path.join(tempWorkspace.workspaceRoot, "safe.txt")),
+        ).toBe(false);
+        expect(fs.existsSync(escapePath)).toBe(false);
+
+        const execution = runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_normalized_approval"),
+              modelCallId: batchContext.modelCallId,
+              ordinal: 1,
+              toolName: "workspace.write_text",
+              rawArguments,
+            },
+          ],
+          batchContext,
+        );
+        rawArguments.path = "../m3-r3ae-escape.txt";
+        rawArguments.content = "mutated";
+
+        const outcomes = await execution;
+        expect(approvalRequests).toBe(1);
+        expect(capturedBinding).toMatchObject({
+          toolName: "workspace.write_text",
+          targetPath: "safe.txt",
+          decision: "require-approval",
+        });
+        expect(capturedBinding?.targetPath).not.toBe("sub/../safe.txt");
+        expect(
+          events.filter((event) => event === "approval.requested"),
+        ).toHaveLength(1);
+        expect(
+          events.filter((event) => event === "approval.resolved"),
+        ).toHaveLength(1);
+        expect(events.filter((event) => event === "tool.started")).toHaveLength(
+          1,
+        );
+        expect(
+          events.filter((event) => event === "tool.completed"),
+        ).toHaveLength(1);
+        expect(outcomes).toHaveLength(1);
+        expect(outcomes[0]).toMatchObject({
+          ok: true,
+          terminalState: "completed",
+          normalizedArguments: {
+            path: "sub/../safe.txt",
+            content: "normalized target",
+            mode: "create",
+          },
+          result: { path: "safe.txt" },
+        });
+        expect(
+          fs.readFileSync(
+            path.join(tempWorkspace.workspaceRoot, "safe.txt"),
+            "utf8",
+          ),
+        ).toBe("normalized target");
+        expect(fs.existsSync(escapePath)).toBe(false);
+      } finally {
+        tempWorkspace.cleanup();
+      }
+    });
+
     it("binds the normalized policy target as the workspace execution authority", async () => {
       const tempWorkspace = createTempWorkspace();
       fs.writeFileSync(
