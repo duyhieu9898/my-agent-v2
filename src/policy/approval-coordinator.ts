@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import * as path from "node:path";
 import { AppError } from "../core/errors.js";
 import type {
   AgentId,
@@ -23,12 +24,14 @@ export interface ApprovalRequestBinding {
   toolCallId: ToolCallId;
   toolName: string;
   normalizedArgumentDigest: string;
+  workspaceDigest: string;
   executionTarget: string;
   sandboxProfile: string;
   actionSummary: string;
   createdAt: number;
   expiresAt: number;
   policyProfile: string;
+  policyVersion: string;
   reason: string;
 }
 
@@ -59,6 +62,8 @@ export type ApprovalRequestedListener = (
 
 export class ApprovalCoordinator {
   private readonly pending = new Map<string, PendingApproval>();
+  private readonly bindings = new Map<string, ApprovalRequestBinding>();
+  private readonly resolvedIds = new Set<string>();
   private readonly listeners = new Set<ApprovalRequestedListener>();
 
   public constructor(
@@ -71,9 +76,30 @@ export class ApprovalCoordinator {
     return () => this.listeners.delete(listener);
   }
 
-  public computeDigest(args: Record<string, unknown>): string {
-    const canonical = JSON.stringify(args, Object.keys(args).sort());
+  public computeDigest(args?: Record<string, unknown>): string {
+    const safeArgs = args ?? {};
+    const canonical = JSON.stringify(safeArgs, Object.keys(safeArgs).sort());
     return createHash("sha256").update(canonical).digest("hex");
+  }
+
+  public computeWorkspaceDigest(workspaceRoot?: string): string {
+    const canonical = path.resolve(workspaceRoot ?? process.cwd());
+    return createHash("sha256").update(canonical).digest("hex");
+  }
+
+  public getBinding(
+    approvalId: ApprovalId,
+  ): ApprovalRequestBinding | undefined {
+    return this.bindings.get(approvalId);
+  }
+
+  public getBindingByToolCallId(
+    toolCallId: ToolCallId,
+  ): ApprovalRequestBinding | undefined {
+    for (const binding of this.bindings.values()) {
+      if (binding.toolCallId === toolCallId) return binding;
+    }
+    return undefined;
   }
 
   public async requestApproval(params: {
@@ -85,11 +111,14 @@ export class ApprovalCoordinator {
     modelCallId: ModelCallId;
     toolCallId: ToolCallId;
     toolName: string;
-    rawArguments: Record<string, unknown>;
+    normalizedArguments?: Record<string, unknown>;
+    rawArguments?: Record<string, unknown>;
+    workspaceRoot?: string;
     executionTarget: string;
     sandboxProfile: string;
     actionSummary: string;
     policyProfile: string;
+    policyVersion?: string;
     reason: string;
     timeoutMs?: number;
     signal?: AbortSignal;
@@ -98,7 +127,10 @@ export class ApprovalCoordinator {
     const now = Date.now();
     const timeoutMs = params.timeoutMs ?? this.defaultTimeoutMs;
     const expiresAt = now + timeoutMs;
-    const digest = this.computeDigest(params.rawArguments);
+    const normalizedArgs =
+      params.normalizedArguments ?? params.rawArguments ?? {};
+    const digest = this.computeDigest(normalizedArgs);
+    const workspaceDigest = this.computeWorkspaceDigest(params.workspaceRoot);
 
     const binding: ApprovalRequestBinding = {
       approvalId,
@@ -111,14 +143,18 @@ export class ApprovalCoordinator {
       toolCallId: params.toolCallId,
       toolName: params.toolName,
       normalizedArgumentDigest: digest,
+      workspaceDigest,
       executionTarget: params.executionTarget,
       sandboxProfile: params.sandboxProfile,
       actionSummary: params.actionSummary,
       createdAt: now,
       expiresAt,
       policyProfile: params.policyProfile,
+      policyVersion: params.policyVersion ?? "1.0.0",
       reason: params.reason,
     };
+
+    this.bindings.set(approvalId, binding);
 
     return new Promise<ApprovalResolutionStatus>((resolve) => {
       const timer = setTimeout(() => {
@@ -159,6 +195,10 @@ export class ApprovalCoordinator {
     runId: RunId,
     decision: ApprovalDecision,
   ): ApprovalResolutionResult {
+    if (this.resolvedIds.has(approvalId)) {
+      return { approvalId, status: "already-resolved" };
+    }
+
     const pending = this.pending.get(approvalId);
     if (!pending) {
       return { approvalId, status: "not-found" };
@@ -175,7 +215,7 @@ export class ApprovalCoordinator {
     return { approvalId, status };
   }
 
-  public cancelPendingForRun(runId: RunId, reason?: string): void {
+  public cancelPendingForRun(runId: RunId, _reason?: string): void {
     for (const [approvalId, pending] of this.pending.entries()) {
       if (pending.binding.runId === runId) {
         this.finish(approvalId as ApprovalId, "cancelled");
@@ -194,6 +234,7 @@ export class ApprovalCoordinator {
     const pending = this.pending.get(approvalId);
     if (!pending) return;
 
+    this.resolvedIds.add(approvalId);
     clearTimeout(pending.timer);
     this.pending.delete(approvalId);
     pending.resolve(status);

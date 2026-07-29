@@ -150,6 +150,7 @@ export class ToolRuntime {
     const plannedItems: Array<{
       req: NormalizedToolRequest;
       tool?: ToolDescriptor;
+      normalizedArguments?: Record<string, unknown>;
       argError?: AppError;
     }> = [];
 
@@ -158,21 +159,6 @@ export class ToolRuntime {
         toolCallId: req.toolCallId,
         data: { toolName: req.toolName, ordinal: req.ordinal },
       });
-
-      const argBytes = Buffer.byteLength(
-        JSON.stringify(req.rawArguments),
-        "utf8",
-      );
-      if (argBytes > this.limits.maxToolArgumentBytes) {
-        plannedItems.push({
-          req,
-          argError: new AppError(
-            "TOOL_ARGUMENTS_INVALID",
-            `Tool arguments size ${argBytes} bytes exceeds limit ${this.limits.maxToolArgumentBytes}`,
-          ),
-        });
-        continue;
-      }
 
       const tool = this.registry.get(req.toolName);
       if (!tool) {
@@ -202,7 +188,28 @@ export class ToolRuntime {
         continue;
       }
 
-      plannedItems.push({ req, tool });
+      const normalizedArguments = Object.freeze(
+        JSON.parse(JSON.stringify(argVal.value)),
+      );
+
+      const argBytes = Buffer.byteLength(
+        JSON.stringify(normalizedArguments),
+        "utf8",
+      );
+      if (argBytes > this.limits.maxToolArgumentBytes) {
+        plannedItems.push({
+          req,
+          tool,
+          normalizedArguments,
+          argError: new AppError(
+            "TOOL_ARGUMENTS_INVALID",
+            `Tool arguments size ${argBytes} bytes exceeds limit ${this.limits.maxToolArgumentBytes}`,
+          ),
+        });
+        continue;
+      }
+
+      plannedItems.push({ req, tool, normalizedArguments });
     }
 
     const allParallelSafeRead = plannedItems.every(
@@ -216,10 +223,11 @@ export class ToolRuntime {
     const executeItem = async (item: {
       req: NormalizedToolRequest;
       tool?: ToolDescriptor;
+      normalizedArguments?: Record<string, unknown>;
       argError?: AppError;
     }): Promise<NormalizedToolOutcome> => {
       const startTime = Date.now();
-      const { req, tool, argError } = item;
+      const { req, tool, normalizedArguments, argError } = item;
 
       if (argError) {
         this.emitEvent("tool.failed", runId, {
@@ -232,12 +240,13 @@ export class ToolRuntime {
           ordinal: req.ordinal,
           terminalState: "failed-before-known-side-effect",
           ok: false,
+          ...(normalizedArguments ? { normalizedArguments } : {}),
           error: { code: argError.code, message: argError.message },
           durationMs: Date.now() - startTime,
         };
       }
 
-      if (!tool) {
+      if (!tool || !normalizedArguments) {
         const err = new AppError(
           "TOOL_NOT_FOUND",
           `Tool '${req.toolName}' is not registered`,
@@ -259,7 +268,7 @@ export class ToolRuntime {
 
       const polResult = await this.policy.evaluateInvocation(
         tool,
-        req.rawArguments,
+        normalizedArguments,
         workspaceRoot,
       );
 
@@ -286,13 +295,14 @@ export class ToolRuntime {
           ordinal: req.ordinal,
           terminalState: "failed-before-known-side-effect",
           ok: false,
+          normalizedArguments,
           error: { code: err.code, message: err.message },
           durationMs: Date.now() - startTime,
         };
       }
 
       if (polResult.decision === "require-approval") {
-        const actionSummary = tool.approvalSummaryRenderer(req.rawArguments);
+        const actionSummary = tool.approvalSummaryRenderer(normalizedArguments);
 
         const approvalStatus = await this.approvalCoordinator.requestApproval({
           agentId: batchContext.agentId,
@@ -303,18 +313,26 @@ export class ToolRuntime {
           modelCallId: batchContext.modelCallId,
           toolCallId: req.toolCallId,
           toolName: req.toolName,
-          rawArguments: req.rawArguments,
+          normalizedArguments,
+          workspaceRoot,
           executionTarget: tool.executionTarget,
           sandboxProfile: tool.sandboxRequirement,
           actionSummary,
           policyProfile: polResult.policyProfile,
+          policyVersion: polResult.policyVersion,
           reason: polResult.reason,
           timeoutMs: this.limits.approvalTimeoutMs,
           ...(signal ? { signal } : {}),
         });
 
+        const binding = this.approvalCoordinator.getBindingByToolCallId(
+          req.toolCallId,
+        );
+        const approvalId = binding?.approvalId;
+
         this.emitEvent("approval.resolved", runId, {
           toolCallId: req.toolCallId,
+          ...(approvalId ? { approvalId } : {}),
           data: { status: approvalStatus },
         });
 
@@ -331,6 +349,7 @@ export class ToolRuntime {
           );
           this.emitEvent("tool.failed", runId, {
             toolCallId: req.toolCallId,
+            ...(approvalId ? { approvalId } : {}),
             data: { error: err.message, code: err.code },
           });
           return {
@@ -342,6 +361,47 @@ export class ToolRuntime {
                 ? "cancelled-with-no-known-side-effect"
                 : "failed-before-known-side-effect",
             ok: false,
+            normalizedArguments,
+            error: { code: err.code, message: err.message },
+            durationMs: Date.now() - startTime,
+          };
+        }
+
+        // Validate approval binding
+        const validBinding =
+          binding &&
+          binding.agentId === batchContext.agentId &&
+          binding.sessionKey === batchContext.sessionKey &&
+          binding.sessionId === batchContext.sessionId &&
+          binding.runId === batchContext.runId &&
+          binding.attemptId === batchContext.attemptId &&
+          binding.modelCallId === batchContext.modelCallId &&
+          binding.toolCallId === req.toolCallId &&
+          binding.toolName === req.toolName &&
+          binding.normalizedArgumentDigest ===
+            this.approvalCoordinator.computeDigest(normalizedArguments) &&
+          binding.workspaceDigest ===
+            this.approvalCoordinator.computeWorkspaceDigest(workspaceRoot) &&
+          binding.executionTarget === tool.executionTarget &&
+          binding.sandboxProfile === tool.sandboxRequirement;
+
+        if (!validBinding) {
+          const err = new AppError(
+            "TOOL_APPROVAL_DENIED",
+            `Approval binding validation failed for tool '${req.toolName}'`,
+          );
+          this.emitEvent("tool.failed", runId, {
+            toolCallId: req.toolCallId,
+            ...(approvalId ? { approvalId } : {}),
+            data: { error: err.message, code: err.code },
+          });
+          return {
+            toolCallId: req.toolCallId,
+            toolName: req.toolName,
+            ordinal: req.ordinal,
+            terminalState: "failed-before-known-side-effect",
+            ok: false,
+            normalizedArguments,
             error: { code: err.code, message: err.message },
             durationMs: Date.now() - startTime,
           };
@@ -349,7 +409,7 @@ export class ToolRuntime {
 
         const recheckPolicy = await this.policy.evaluateInvocation(
           tool,
-          req.rawArguments,
+          normalizedArguments,
           workspaceRoot,
         );
         if (recheckPolicy.decision === "deny") {
@@ -367,6 +427,7 @@ export class ToolRuntime {
             ordinal: req.ordinal,
             terminalState: "failed-before-known-side-effect",
             ok: false,
+            normalizedArguments,
             error: { code: err.code, message: err.message },
             durationMs: Date.now() - startTime,
           };
@@ -376,7 +437,7 @@ export class ToolRuntime {
       const execContext: ToolExecutionContext = {
         agentId: batchContext.agentId,
         workspaceRoot,
-        targetPath: (req.rawArguments["path"] as string) ?? "",
+        targetPath: (normalizedArguments["path"] as string) ?? "",
         toolCallId: req.toolCallId,
         deadline:
           Date.now() + Math.min(tool.timeoutMs, this.limits.toolTimeoutMs),

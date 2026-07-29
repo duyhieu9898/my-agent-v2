@@ -52,12 +52,12 @@ describe("ApprovalCoordinator", () => {
     const status = await approvalPromise;
     expect(status).toBe("allowed");
 
-    // Second resolution should return not-found (single-use)
+    // Second resolution should return already-resolved (single-use)
     const secondRes = coordinator.resolveApproval(
       notifiedApprovalId as any,
       runId,
       "allow-once",
     );
-    expect(secondRes.status).toBe("not-found");
+    expect(secondRes.status).toBe("already-resolved");
   });
 });

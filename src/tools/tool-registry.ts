@@ -41,7 +41,18 @@ export class ToolRegistry {
     const argValidate = ajv.compile(tool.argumentSchema);
     const resValidate = ajv.compile(tool.resultSchema);
 
-    this.tools.set(tool.name, tool);
+    if (tool.redactionRules && !Object.isFrozen(tool.redactionRules)) {
+      Object.freeze(tool.redactionRules);
+    }
+    if (tool.inputLimits && !Object.isFrozen(tool.inputLimits)) {
+      Object.freeze(tool.inputLimits);
+    }
+    if (tool.outputLimits && !Object.isFrozen(tool.outputLimits)) {
+      Object.freeze(tool.outputLimits);
+    }
+    const frozenTool = Object.isFrozen(tool) ? tool : Object.freeze(tool);
+
+    this.tools.set(tool.name, frozenTool);
     this.compiledSchemas.set(tool.name, { argValidate, resValidate });
     this.cachedFingerprint = null;
   }
@@ -75,8 +86,13 @@ export class ToolRegistry {
       sensitivityClassification: tool.sensitivityClassification,
       executionTarget: tool.executionTarget,
       sandboxRequirement: tool.sandboxRequirement,
+      timeoutMs: tool.timeoutMs,
+      cancellationSupport: tool.cancellationSupport,
       concurrencyTrait: tool.concurrencyTrait,
       idempotencyTrait: tool.idempotencyTrait,
+      redactionRules: tool.redactionRules,
+      inputLimits: tool.inputLimits,
+      outputLimits: tool.outputLimits,
       progressFingerprintVersion: tool.progressFingerprintVersion,
     });
 
@@ -112,7 +128,11 @@ export class ToolRegistry {
       return { ok: false, error: `Unknown tool '${toolName}'` };
     }
 
-    const valid = schemas.argValidate(args);
+    const clonedArgs =
+      typeof args === "object" && args !== null
+        ? JSON.parse(JSON.stringify(args))
+        : args;
+    const valid = schemas.argValidate(clonedArgs);
     if (!valid) {
       const errors =
         schemas.argValidate.errors
@@ -121,7 +141,7 @@ export class ToolRegistry {
       return { ok: false, error: errors };
     }
 
-    return { ok: true, value: args as Record<string, unknown> };
+    return { ok: true, value: clonedArgs as Record<string, unknown> };
   }
 
   public validateResult(

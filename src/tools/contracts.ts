@@ -71,6 +71,7 @@ export interface NormalizedToolOutcome {
   ordinal: number;
   terminalState: TerminalToolState;
   ok: boolean;
+  normalizedArguments?: Record<string, unknown>;
   result?: unknown;
   error?: {
     code: string;

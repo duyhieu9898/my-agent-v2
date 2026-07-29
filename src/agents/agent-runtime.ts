@@ -834,9 +834,7 @@ export class AgentRuntime {
             ) {
               const toolRequests: NormalizedToolRequest[] =
                 output.toolCalls.map((c, i) => ({
-                  toolCallId: createToolCallId(
-                    c.id ?? randomIdFactory.nextToolCallId(),
-                  ),
+                  toolCallId: randomIdFactory.nextToolCallId(),
                   ...(c.id ? { providerCallId: c.id } : {}),
                   modelCallId: createModelCallId(modelCallId),
                   ordinal: i + 1,
@@ -893,7 +891,7 @@ export class AgentRuntime {
                   modelCallId,
                   toolCallId: req.toolCallId,
                   toolName: req.toolName,
-                  arguments: req.rawArguments,
+                  arguments: out.normalizedArguments ?? req.rawArguments,
                   ordinal: req.ordinal,
                   createdAt: new Date().toISOString(),
                 });
