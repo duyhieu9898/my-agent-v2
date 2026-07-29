@@ -137,15 +137,19 @@ Baseline: <baseline-commit>
 
 ### Report Execution
 
-When a report is required:
+Do NOT proactively run or generate `$agent-report` unless explicitly requested by the user.
 
-After validation and any requested commit/push, invoke:
+When a task meets the report-required criteria, remind the user and specify how to invoke it:
 
 ```text
-$agent-report
+Use $agent-report after validation and any requested commit/push.
+Task ID: <task-id>
+Outcome: <outcome-type>
+Baseline: <baseline-commit>
 ```
 
-Provide or preserve these inputs from the task contract:
+When requested by the user, invoke `$agent-report` providing or preserving these inputs from the task contract:
+
 
 - task ID;
 - outcome type;
