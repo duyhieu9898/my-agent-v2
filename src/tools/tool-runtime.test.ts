@@ -1032,5 +1032,91 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
         JSON.stringify({ approvedBinding, executorContext }),
       ).not.toContain("mutated");
     });
+
+    it("uses the original registry renderer and executor after replacement attempts", async () => {
+      const idFactory = createSequentialIdFactory();
+      const registry = new ToolRegistry();
+      let originalExecutorCalls = 0;
+      let replacementExecutorCalls = 0;
+      let originalRendererCalls = 0;
+      let replacementRendererCalls = 0;
+      registry.register({
+        ...sideEffectRegistration(async () => {
+          originalExecutorCalls++;
+          return { done: true };
+        }),
+        approvalSummaryRenderer: () => {
+          originalRendererCalls++;
+          return "original approval summary";
+        },
+      });
+      const originalExecuteOperation = registry.execute;
+      const originalRenderOperation = registry.renderApprovalSummary;
+      registry.freeze();
+
+      expect(() => {
+        (registry as any).execute = async () => {
+          replacementExecutorCalls++;
+          return { done: true };
+        };
+      }).toThrow();
+      expect(() => {
+        (registry as any).renderApprovalSummary = () => {
+          replacementRendererCalls++;
+          return "replacement approval summary";
+        };
+      }).toThrow();
+      expect(registry.execute).toBe(originalExecuteOperation);
+      expect(registry.renderApprovalSummary).toBe(originalRenderOperation);
+
+      const approvals = new ApprovalCoordinator(idFactory, 5000);
+      const runtime = new ToolRuntime(
+        registry,
+        {
+          evaluateInvocation: async () => validPolicy("require-approval"),
+        } as any,
+        approvals,
+      );
+      let approvalSummary: string | undefined;
+      const context: ToolBatchContext = {
+        agentId: createAgentId("primary"),
+        sessionKey: createSessionKey("agent:primary:test"),
+        sessionId: idFactory.nextSessionId(),
+        runId: idFactory.nextRunId(),
+        attemptId: idFactory.nextAttemptId(),
+        modelCallId: idFactory.nextModelCallId(),
+        workspaceRoot: process.cwd(),
+        sandboxProfile: "host-workspace-v1",
+        totalRunToolCalls: 0,
+      };
+      approvals.onRequest((binding) => {
+        approvalSummary = binding.actionSummary;
+        approvals.resolveApproval(
+          binding.approvalId,
+          context.runId,
+          "allow-once",
+        );
+      });
+
+      const [outcome] = await runtime.executeBatch(
+        [
+          {
+            toolCallId: createToolCallId("r1d_registry"),
+            modelCallId: context.modelCallId,
+            ordinal: 1,
+            toolName: "test.side_effect",
+            rawArguments: { path: "original.txt" },
+          },
+        ],
+        context,
+      );
+
+      expect(outcome!.ok).toBe(true);
+      expect(approvalSummary).toBe("original approval summary");
+      expect(originalRendererCalls).toBe(1);
+      expect(originalExecutorCalls).toBe(1);
+      expect(replacementRendererCalls).toBe(0);
+      expect(replacementExecutorCalls).toBe(0);
+    });
   });
 });

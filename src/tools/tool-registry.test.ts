@@ -254,6 +254,23 @@ describe("ToolRegistry", () => {
     expect(replacementExecuted).toBe(0);
   });
 
+  it("prevents shadowing narrow execution and rendering operations after freeze", () => {
+    const registry = new ToolRegistry();
+    registry.register({ ...workspaceListTool, name: "test.operation_lock" });
+    const originalExecuteOperation = registry.execute;
+    const originalRenderOperation = registry.renderApprovalSummary;
+    registry.freeze();
+
+    expect(() => {
+      (registry as any).execute = async () => ({ replaced: true });
+    }).toThrow();
+    expect(() => {
+      (registry as any).renderApprovalSummary = () => "replaced";
+    }).toThrow();
+    expect(registry.execute).toBe(originalExecuteOperation);
+    expect(registry.renderApprovalSummary).toBe(originalRenderOperation);
+  });
+
   it("strictly tests strictJsonSnapshot and canonicalJsonStringify requirements", () => {
     // Rejections
     expect(() => strictJsonSnapshot(undefined)).toThrow();

@@ -23,9 +23,12 @@ import { HarnessRegistry } from "./harness-registry.js";
 import { HeuristicTokenEstimator } from "../models/token-estimator.js";
 import { ToolRegistry } from "../tools/tool-registry.js";
 import { workspaceWriteTextTool } from "../tools/workspace-tools.js";
+import { ToolRuntime } from "../tools/tool-runtime.js";
+import { ApprovalCoordinator } from "../policy/approval-coordinator.js";
 import { WorkspacePolicy } from "../policy/workspace-policy.js";
 import {
   createRuntimeAuthority,
+  createSequentialIdFactory,
   createTemporaryDatabase,
   primaryAgentDefinition,
 } from "../test/foundation-fixtures.js";
@@ -2562,6 +2565,29 @@ describe("AgentRuntime", () => {
       content: "norm",
       mode: "create",
     }); // equal to normalized, NOT raw "raw"
+    expect(toolCallEntry.arguments).not.toEqual({
+      path: "a.txt",
+      content: "raw",
+      mode: "create",
+    });
+    const successfulToolCalls = page.entries.filter(
+      (e) => e.type === "tool-call",
+    );
+    const successfulToolResults = page.entries.filter(
+      (e) => e.type === "tool-result",
+    );
+    expect(successfulToolCalls).toHaveLength(8);
+    expect(successfulToolResults).toHaveLength(8);
+    expect(
+      successfulToolResults.every((result) =>
+        successfulToolCalls.some(
+          (call) => call.toolCallId === result.toolCallId,
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      page.entries.filter((e) => e.type === "message" && e.role === "user"),
+    ).toHaveLength(1);
 
     // Now test invariant failure path: admitted outcome missing normalizedArguments
     fakeOutcomes = [
@@ -2595,5 +2621,111 @@ describe("AgentRuntime", () => {
       (e, idx) => idx >= initialEntriesCount && e.type === "tool-call",
     );
     expect(newToolCalls).toHaveLength(0);
+    const newToolResults = pageAfterBad.entries.filter(
+      (e, idx) => idx >= initialEntriesCount && e.type === "tool-result",
+    );
+    const newUserMessages = pageAfterBad.entries.filter(
+      (e, idx) =>
+        idx >= initialEntriesCount && e.type === "message" && e.role === "user",
+    );
+    expect(newToolResults).toHaveLength(0);
+    expect(newUserMessages).toHaveLength(0);
   });
+
+  it.each([
+    [
+      "unknown tool",
+      "unregistered.tool",
+      { path: "raw-unknown.txt", content: "raw", mode: "create" },
+    ],
+    [
+      "schema-invalid arguments",
+      "workspace.write_text",
+      {
+        path: "raw-invalid.txt",
+        content: "raw",
+        mode: "create",
+        unsupported: true,
+      },
+    ],
+  ] as const)(
+    "commits no normal transcript pair for %s",
+    async (_caseName, toolName, arguments_) => {
+      const sessions = new SessionResolver(new SqliteSessionStore(database));
+      const transcripts = new InMemoryTranscriptStore();
+      const events = new RuntimeEventBus();
+      const registry = new ToolRegistry();
+      registry.register(workspaceWriteTextTool);
+      registry.freeze();
+      const idFactory = createSequentialIdFactory();
+      const toolRuntime = new ToolRuntime(
+        registry,
+        new WorkspacePolicy(),
+        new ApprovalCoordinator(idFactory, 5000),
+      );
+      const provider = new FakeModelProvider({
+        text: "calling rejected tool",
+        toolCalls: [
+          { id: "call_rejected", name: toolName, arguments: arguments_ },
+        ],
+        usage: {
+          providerTotalTokens: 10n,
+          inputTokens: 5n,
+          outputTokens: 5n,
+          measurement: "provider-exact",
+        },
+        billingCertainty: "actual-known",
+      });
+      const runtime = new AgentRuntime({
+        ...createRuntimeAuthority(),
+        sessions,
+        transcripts,
+        runs: new SqliteRunStore(database),
+        journal: new SqliteRunJournalStore(database),
+        events,
+        lanes: new SessionRunLaneCoordinator(1),
+        provider,
+        usageBudgetGate: new UsageBudgetGate(database, [], []),
+        toolRuntime,
+        toolRegistry: registry,
+        workspacePolicy: new WorkspacePolicy(),
+        workspaceRoot: process.cwd(),
+      });
+
+      const run = await runtime.admit({
+        session: { kind: "main", agentId: "primary" },
+        input: `Rejected ${toolName}`,
+      });
+      const terminal = await terminalFor(events, run.runId);
+      expect(terminal.eventName).toBe("run.failed");
+
+      const session = await sessions.resolve({
+        kind: "main",
+        agentId: "primary",
+      });
+      const page = await transcripts.readPage(session.sessionId, {
+        limit: 100,
+      });
+      const userMessages = page.entries.filter(
+        (entry) => entry.type === "message" && entry.role === "user",
+      );
+      const toolCalls = page.entries.filter(
+        (entry) => entry.type === "tool-call",
+      );
+      const toolResults = page.entries.filter(
+        (entry) => entry.type === "tool-result",
+      );
+      expect(userMessages).toHaveLength(0);
+      expect(toolCalls).toHaveLength(0);
+      expect(toolResults).toHaveLength(0);
+      expect(
+        page.entries.filter(
+          (entry) => entry.type === "tool-call" && entry.toolName === toolName,
+        ),
+      ).toHaveLength(0);
+      expect(page.entries.every((entry) => entry.type === "message")).toBe(
+        true,
+      );
+    },
+  );
 });

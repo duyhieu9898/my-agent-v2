@@ -96,6 +96,9 @@ export class ToolRegistry {
   public freeze(): void {
     this.frozen = true;
     this.computeFingerprint();
+    // Runtime consumers call narrow registry operations. Prevent own-property
+    // shadowing of those prototype methods after publication.
+    Object.preventExtensions(this);
   }
 
   public isFrozen(): boolean {
