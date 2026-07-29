@@ -10,7 +10,10 @@ import type {
   ToolCallId,
 } from "../core/identities.js";
 
-import type { ApprovalCoordinator } from "../policy/approval-coordinator.js";
+import type {
+  ApprovalCoordinator,
+  ApprovalRequestBinding,
+} from "../policy/approval-coordinator.js";
 import type {
   InvocationPolicyResult,
   PolicyDecisionType,
@@ -123,6 +126,54 @@ function snapshotInvocationPolicy(
   } catch {
     return undefined;
   }
+}
+
+function approvalBindingMatches({
+  binding,
+  batchContext,
+  request,
+  tool,
+  normalizedArguments,
+  policy,
+  workspaceRoot,
+  approvalCoordinator,
+}: {
+  binding: ApprovalRequestBinding | undefined;
+  batchContext: Readonly<ToolBatchContext>;
+  request: NormalizedToolRequest;
+  tool: ToolDescriptor;
+  normalizedArguments: Record<string, unknown>;
+  policy: InvocationPolicySnapshot;
+  workspaceRoot: string;
+  approvalCoordinator: ApprovalCoordinator;
+}): boolean {
+  return (
+    binding !== undefined &&
+    binding.agentId === batchContext.agentId &&
+    binding.sessionKey === batchContext.sessionKey &&
+    binding.sessionId === batchContext.sessionId &&
+    binding.runId === batchContext.runId &&
+    binding.attemptId === batchContext.attemptId &&
+    binding.modelCallId === batchContext.modelCallId &&
+    binding.toolCallId === request.toolCallId &&
+    binding.toolName === request.toolName &&
+    binding.normalizedArgumentDigest ===
+      approvalCoordinator.computeDigest(normalizedArguments) &&
+    binding.workspaceDigest ===
+      approvalCoordinator.computeWorkspaceDigest(workspaceRoot) &&
+    binding.executionTarget === tool.executionTarget &&
+    binding.sandboxProfile === batchContext.sandboxProfile &&
+    binding.sandboxRequirement === tool.sandboxRequirement &&
+    binding.decision === policy.decision &&
+    binding.policyProfile === policy.policyProfile &&
+    binding.policyVersion === policy.policyVersion &&
+    binding.reason === policy.reason &&
+    binding.targetPath === policy.targetPath &&
+    binding.policyConstraintsDigest ===
+      approvalCoordinator.computeCanonicalDigest(policy.policyConstraints) &&
+    binding.redactionMetadataDigest ===
+      approvalCoordinator.computeCanonicalDigest(policy.redactionMetadata)
+  );
 }
 
 export class ToolRuntime {
@@ -317,10 +368,19 @@ export class ToolRuntime {
         );
       } else if (item.policy.decision === "require-approval") {
         item.approvalGated = true;
-        const actionSummary = this.registry.renderApprovalSummary(
-          item.req.toolName,
-          item.normalizedArguments,
-        );
+        let actionSummary: string;
+        try {
+          actionSummary = this.registry.renderApprovalSummary(
+            item.req.toolName,
+            item.normalizedArguments,
+          );
+        } catch {
+          item.admissionError = new AppError(
+            "TOOL_IMPLEMENTATION_FAILED",
+            `Failed to render approval summary for '${item.req.toolName}'`,
+          );
+          continue;
+        }
         const approvalStatus = await this.approvalCoordinator.requestApproval({
           agentId: admittedBatchContext.agentId,
           sessionKey: admittedBatchContext.sessionKey,
@@ -366,26 +426,18 @@ export class ToolRuntime {
             `Approval for tool '${item.req.toolName}' was ${approvalStatus}`,
           );
         } else {
-          const bindingValid =
-            binding &&
-            binding.agentId === admittedBatchContext.agentId &&
-            binding.sessionKey === admittedBatchContext.sessionKey &&
-            binding.sessionId === admittedBatchContext.sessionId &&
-            binding.runId === admittedBatchContext.runId &&
-            binding.attemptId === admittedBatchContext.attemptId &&
-            binding.modelCallId === admittedBatchContext.modelCallId &&
-            binding.toolCallId === item.req.toolCallId &&
-            binding.toolName === item.req.toolName &&
-            binding.normalizedArgumentDigest ===
-              this.approvalCoordinator.computeDigest(
-                item.normalizedArguments,
-              ) &&
-            binding.workspaceDigest ===
-              this.approvalCoordinator.computeWorkspaceDigest(workspaceRoot) &&
-            binding.executionTarget === item.tool.executionTarget &&
-            binding.sandboxProfile === admittedBatchContext.sandboxProfile &&
-            binding.sandboxRequirement === item.tool.sandboxRequirement;
-          if (!bindingValid) {
+          if (
+            !approvalBindingMatches({
+              binding,
+              batchContext: admittedBatchContext,
+              request: item.req,
+              tool: item.tool,
+              normalizedArguments: item.normalizedArguments,
+              policy: item.policy,
+              workspaceRoot,
+              approvalCoordinator: this.approvalCoordinator,
+            })
+          ) {
             item.admissionError = new AppError(
               "TOOL_APPROVAL_DENIED",
               `Approval binding validation failed for tool '${item.req.toolName}'`,
@@ -579,224 +631,25 @@ export class ToolRuntime {
         };
       }
 
-      let executionPolicy = polResult;
-
       if (polResult.decision === "require-approval" && !item.approvalGated) {
-        let actionSummary: string;
-        try {
-          actionSummary = this.registry.renderApprovalSummary(
-            req.toolName,
-            normalizedArguments,
-          );
-        } catch (cause) {
-          const err =
-            cause instanceof AppError
-              ? cause
-              : new AppError(
-                  "TOOL_IMPLEMENTATION_FAILED",
-                  `Failed to render approval summary for '${req.toolName}'`,
-                );
-          return {
-            toolCallId: req.toolCallId,
-            toolName: req.toolName,
-            ordinal: req.ordinal,
-            terminalState: "failed-before-known-side-effect",
-            ok: false,
-            normalizedArguments,
-            error: { code: err.code, message: err.message },
-            durationMs: Date.now() - startTime,
-          };
-        }
-
-        const approvalStatus = await this.approvalCoordinator.requestApproval({
-          agentId: admittedBatchContext.agentId,
-          sessionKey: admittedBatchContext.sessionKey,
-          sessionId: admittedBatchContext.sessionId,
-          runId: admittedBatchContext.runId,
-          attemptId: admittedBatchContext.attemptId,
-          modelCallId: admittedBatchContext.modelCallId,
+        const err = new AppError(
+          "TOOL_APPROVAL_DENIED",
+          `Tool '${req.toolName}' did not complete approval admission`,
+        );
+        this.emitEvent("tool.failed", runId, {
+          toolCallId: req.toolCallId,
+          data: { error: err.message, code: err.code },
+        });
+        return {
           toolCallId: req.toolCallId,
           toolName: req.toolName,
+          ordinal: req.ordinal,
+          terminalState: "failed-before-known-side-effect",
+          ok: false,
           normalizedArguments,
-          workspaceRoot,
-          executionTarget: tool.executionTarget,
-          sandboxProfile: admittedBatchContext.sandboxProfile,
-          sandboxRequirement: tool.sandboxRequirement,
-          actionSummary,
-          decision: polResult.decision,
-          policyProfile: polResult.policyProfile,
-          policyVersion: polResult.policyVersion,
-          reason: polResult.reason,
-          ...(polResult.targetPath !== undefined
-            ? { targetPath: polResult.targetPath }
-            : {}),
-          ...(polResult.policyConstraints !== undefined
-            ? { policyConstraints: polResult.policyConstraints }
-            : {}),
-          ...(polResult.redactionMetadata !== undefined
-            ? { redactionMetadata: polResult.redactionMetadata }
-            : {}),
-          timeoutMs: this.limits.approvalTimeoutMs,
-          ...(signal ? { signal } : {}),
-        });
-
-        const binding = this.approvalCoordinator.getBindingByToolCallId(
-          req.toolCallId,
-        );
-        const approvalId = binding?.approvalId;
-
-        this.emitEvent("approval.resolved", runId, {
-          toolCallId: req.toolCallId,
-          ...(approvalId ? { approvalId } : {}),
-          data: { status: approvalStatus },
-        });
-
-        if (approvalStatus !== "allowed") {
-          const code =
-            approvalStatus === "expired"
-              ? "TOOL_APPROVAL_EXPIRED"
-              : approvalStatus === "cancelled"
-                ? "TOOL_CANCELLED"
-                : "TOOL_APPROVAL_DENIED";
-          const err = new AppError(
-            code,
-            `Approval for tool '${req.toolName}' was ${approvalStatus}`,
-          );
-          this.emitEvent("tool.failed", runId, {
-            toolCallId: req.toolCallId,
-            ...(approvalId ? { approvalId } : {}),
-            data: { error: err.message, code: err.code },
-          });
-          return {
-            toolCallId: req.toolCallId,
-            toolName: req.toolName,
-            ordinal: req.ordinal,
-            terminalState:
-              approvalStatus === "cancelled"
-                ? "cancelled-with-no-known-side-effect"
-                : "failed-before-known-side-effect",
-            ok: false,
-            normalizedArguments,
-            error: { code: err.code, message: err.message },
-            durationMs: Date.now() - startTime,
-          };
-        }
-
-        // Validate approval binding
-        const currentArgDigest =
-          this.approvalCoordinator.computeDigest(normalizedArguments);
-        const currentWorkspaceDigest =
-          this.approvalCoordinator.computeWorkspaceDigest(workspaceRoot);
-        const currentConstraintsDigest =
-          this.approvalCoordinator.computeCanonicalDigest(
-            polResult.policyConstraints,
-          );
-        const currentRedactionDigest =
-          this.approvalCoordinator.computeCanonicalDigest(
-            polResult.redactionMetadata,
-          );
-
-        const validBinding =
-          binding &&
-          binding.agentId === admittedBatchContext.agentId &&
-          binding.sessionKey === admittedBatchContext.sessionKey &&
-          binding.sessionId === admittedBatchContext.sessionId &&
-          binding.runId === admittedBatchContext.runId &&
-          binding.attemptId === admittedBatchContext.attemptId &&
-          binding.modelCallId === admittedBatchContext.modelCallId &&
-          binding.toolCallId === req.toolCallId &&
-          binding.toolName === req.toolName &&
-          binding.normalizedArgumentDigest === currentArgDigest &&
-          binding.workspaceDigest === currentWorkspaceDigest &&
-          binding.executionTarget === tool.executionTarget &&
-          binding.sandboxProfile === admittedBatchContext.sandboxProfile &&
-          binding.sandboxRequirement === tool.sandboxRequirement &&
-          binding.decision === polResult.decision &&
-          binding.policyProfile === polResult.policyProfile &&
-          binding.policyVersion === polResult.policyVersion &&
-          binding.reason === polResult.reason &&
-          (binding.targetPath === polResult.targetPath ||
-            (!binding.targetPath && !polResult.targetPath)) &&
-          binding.policyConstraintsDigest === currentConstraintsDigest &&
-          binding.redactionMetadataDigest === currentRedactionDigest;
-
-        if (!validBinding) {
-          const err = new AppError(
-            "TOOL_APPROVAL_DENIED",
-            `Approval binding validation failed for tool '${req.toolName}'`,
-          );
-          this.emitEvent("tool.failed", runId, {
-            toolCallId: req.toolCallId,
-            ...(approvalId ? { approvalId } : {}),
-            data: { error: err.message, code: err.code },
-          });
-          return {
-            toolCallId: req.toolCallId,
-            toolName: req.toolName,
-            ordinal: req.ordinal,
-            terminalState: "failed-before-known-side-effect",
-            ok: false,
-            normalizedArguments,
-            error: { code: err.code, message: err.message },
-            durationMs: Date.now() - startTime,
-          };
-        }
-
-        let recheckPolicy: InvocationPolicySnapshot | undefined;
-        try {
-          recheckPolicy = snapshotInvocationPolicy(
-            await this.policy.evaluateInvocation(
-              tool,
-              normalizedArguments,
-              workspaceRoot,
-            ),
-          );
-        } catch {
-          recheckPolicy = undefined;
-        }
-
-        const recheckConstraintsDigest =
-          this.approvalCoordinator.computeCanonicalDigest(
-            recheckPolicy?.policyConstraints,
-          );
-        const recheckRedactionDigest =
-          this.approvalCoordinator.computeCanonicalDigest(
-            recheckPolicy?.redactionMetadata,
-          );
-
-        const recheckValid =
-          recheckPolicy &&
-          recheckPolicy.decision === "require-approval" &&
-          recheckPolicy.policyProfile === binding.policyProfile &&
-          recheckPolicy.policyVersion === binding.policyVersion &&
-          recheckPolicy.reason === binding.reason &&
-          (recheckPolicy.targetPath === binding.targetPath ||
-            (!recheckPolicy.targetPath && !binding.targetPath)) &&
-          recheckConstraintsDigest === binding.policyConstraintsDigest &&
-          recheckRedactionDigest === binding.redactionMetadataDigest;
-
-        if (!recheckValid) {
-          const err = new AppError(
-            "TOOL_POLICY_DENIED",
-            `Policy recheck failed for tool '${req.toolName}': decision changed or bound field mismatched`,
-          );
-          this.emitEvent("tool.failed", runId, {
-            toolCallId: req.toolCallId,
-            ...(approvalId ? { approvalId } : {}),
-            data: { error: err.message, code: err.code },
-          });
-          return {
-            toolCallId: req.toolCallId,
-            toolName: req.toolName,
-            ordinal: req.ordinal,
-            terminalState: "failed-before-known-side-effect",
-            ok: false,
-            normalizedArguments,
-            error: { code: err.code, message: err.message },
-            durationMs: Date.now() - startTime,
-          };
-        }
-        executionPolicy = recheckPolicy!;
+          error: { code: err.code, message: err.message },
+          durationMs: Date.now() - startTime,
+        };
       }
 
       const execContext = item.executionContext;
