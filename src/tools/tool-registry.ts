@@ -14,7 +14,7 @@ const ajv = new Ajv({ allErrors: true, strict: false });
 
 export class ToolRegistry {
   private readonly descriptors = new Map<string, ToolDescriptor>();
-  private readonly implementations = new Map<
+  readonly #implementations = new Map<
     string,
     {
       execute: (args: any, context: ToolExecutionContext) => Promise<any>;
@@ -80,10 +80,15 @@ export class ToolRegistry {
     const publishedDescriptor = strictJsonSnapshot(metadata);
 
     this.descriptors.set(tool.name, publishedDescriptor);
-    this.implementations.set(tool.name, {
-      execute: tool.execute,
-      approvalSummaryRenderer: tool.approvalSummaryRenderer,
-    });
+    // Keep the executable authority detached from the caller-owned registration
+    // object. Consumers get only the narrow operations below, never this record.
+    this.#implementations.set(
+      tool.name,
+      Object.freeze({
+        execute: tool.execute,
+        approvalSummaryRenderer: tool.approvalSummaryRenderer,
+      }),
+    );
     this.compiledSchemas.set(tool.name, { argValidate, resValidate });
     this.cachedFingerprint = null;
   }
@@ -105,13 +110,33 @@ export class ToolRegistry {
     return Array.from(this.descriptors.values());
   }
 
-  public getInternalImplementation(name: string):
-    | {
-        execute: (args: any, context: ToolExecutionContext) => Promise<any>;
-        approvalSummaryRenderer: (args: any) => string;
-      }
-    | undefined {
-    return this.implementations.get(name);
+  public renderApprovalSummary(
+    name: string,
+    args: Record<string, unknown>,
+  ): string {
+    const implementation = this.#implementations.get(name);
+    if (!implementation) {
+      throw new AppError(
+        "TOOL_NOT_FOUND",
+        `Tool implementation '${name}' is missing`,
+      );
+    }
+    return implementation.approvalSummaryRenderer(args);
+  }
+
+  public execute(
+    name: string,
+    args: Record<string, unknown>,
+    context: ToolExecutionContext,
+  ): Promise<unknown> {
+    const implementation = this.#implementations.get(name);
+    if (!implementation) {
+      throw new AppError(
+        "TOOL_NOT_FOUND",
+        `Tool implementation '${name}' is missing`,
+      );
+    }
+    return implementation.execute(args, context);
   }
 
   public computeToolFingerprint(tool: ToolDescriptor): string {

@@ -180,7 +180,7 @@ describe("ToolRegistry", () => {
     expect(invalidArgs.ok).toBe(false);
   });
 
-  it("proves get() and list() do not expose executable or renderer functions, but internal registry operation retains execution authority", async () => {
+  it("proves get() and list() expose no executable authority while narrow registry operations retain it", async () => {
     const registry = new ToolRegistry();
     let executed = false;
 
@@ -210,14 +210,48 @@ describe("ToolRegistry", () => {
     expect((item as any).execute).toBeUndefined();
     expect((item as any).approvalSummaryRenderer).toBeUndefined();
 
-    const internalImpl = registry.getInternalImplementation("test.secret")!;
-    expect(internalImpl).toBeDefined();
-    expect(internalImpl.approvalSummaryRenderer({ path: "x" })).toBe(
+    expect((registry as any).getInternalImplementation).toBeUndefined();
+    expect((registry as any).implementations).toBeUndefined();
+    expect(registry.renderApprovalSummary("test.secret", { path: "x" })).toBe(
       "Secret action: x",
     );
 
-    await internalImpl.execute({ path: "x" }, {} as any);
+    await registry.execute("test.secret", { path: "x" }, {} as any);
     expect(executed).toBe(true);
+  });
+
+  it("keeps registered execution and approval rendering authority after caller mutation and freeze", async () => {
+    const registry = new ToolRegistry();
+    let originalExecuted = 0;
+    let replacementExecuted = 0;
+    const registration: ToolRegistration = {
+      ...workspaceListTool,
+      name: "test.immutable_authority",
+      approvalSummaryRenderer: () => "original renderer",
+      execute: async () => {
+        originalExecuted++;
+        return { path: "x", entries: [], returnedCount: 0, hasMore: false };
+      },
+    };
+    registry.register(registration);
+    registry.freeze();
+
+    registration.approvalSummaryRenderer = () => "replacement renderer";
+    registration.execute = async () => {
+      replacementExecuted++;
+      return { path: "x", entries: [], returnedCount: 0, hasMore: false };
+    };
+
+    expect(
+      registry.renderApprovalSummary("test.immutable_authority", { path: "x" }),
+    ).toBe("original renderer");
+    await registry.execute(
+      "test.immutable_authority",
+      { path: "x" },
+      {} as any,
+    );
+    expect(originalExecuted).toBe(1);
+    expect(replacementExecuted).toBe(0);
   });
 
   it("strictly tests strictJsonSnapshot and canonicalJsonStringify requirements", () => {

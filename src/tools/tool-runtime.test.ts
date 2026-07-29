@@ -821,4 +821,216 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       expect(events).not.toContain("tool.started");
     });
   });
+
+  describe("Frozen R1C policy and authority closure", () => {
+    function sideEffectRegistration(
+      execute: ToolRegistration["execute"],
+    ): ToolRegistration {
+      return {
+        name: "test.side_effect",
+        descriptorVersion: "1.0.0",
+        owningModule: "test",
+        description: "Fake side effect tool",
+        argumentSchema: Type.Object({ path: Type.String() }),
+        resultSchema: Type.Object({ done: Type.Boolean() }),
+        effectClassification: "side-effecting",
+        sensitivityClassification: "none",
+        executionTarget: "workspace",
+        sandboxRequirement: "host-workspace-v1",
+        timeoutMs: 5000,
+        cancellationSupport: true,
+        concurrencyTrait: "sequential",
+        idempotencyTrait: false,
+        approvalSummaryRenderer: () => "approved action",
+        redactionRules: [],
+        inputLimits: { maxBytes: 100 },
+        outputLimits: { maxBytes: 100 },
+        progressFingerprintVersion: "1.0.0",
+        execute,
+      };
+    }
+
+    function validPolicy(decision: "allow" | "deny" | "require-approval") {
+      return {
+        decision,
+        policyProfile: "test-policy",
+        policyVersion: "1.0.0",
+        reason: "test reason",
+        ...(decision === "deny" ? {} : { targetPath: "original.txt" }),
+        policyConstraints: { scope: "original" },
+        redactionMetadata: { paths: "redacted" },
+      };
+    }
+
+    it.each([
+      [undefined, "missing policy result"],
+      [
+        { ...validPolicy("require-approval"), decision: "unsupported" },
+        "unsupported decision",
+      ],
+      [
+        { ...validPolicy("require-approval"), policyConstraints: undefined },
+        "missing policy evidence",
+      ],
+      [validPolicy("allow"), "initial side-effect allow"],
+      [validPolicy("deny"), "explicit deny"],
+    ])(
+      "fails closed for %s before approval, tool.started, or I/O",
+      async (policyResult, _label) => {
+        const idFactory = createSequentialIdFactory();
+        const registry = new ToolRegistry();
+        let ioCount = 0;
+        registry.register(
+          sideEffectRegistration(async () => {
+            ioCount++;
+            return { done: true };
+          }),
+        );
+        registry.freeze();
+        let approvals = 0;
+        const approvalsCoordinator = new ApprovalCoordinator(idFactory, 5000);
+        approvalsCoordinator.onRequest(() => approvals++);
+        const runtime = new ToolRuntime(
+          registry,
+          { evaluateInvocation: async () => policyResult } as any,
+          approvalsCoordinator,
+        );
+        const events: string[] = [];
+        runtime.onEvent((event) => events.push(event.type));
+        const context: ToolBatchContext = {
+          agentId: createAgentId("primary"),
+          sessionKey: createSessionKey("agent:primary:test"),
+          sessionId: idFactory.nextSessionId(),
+          runId: idFactory.nextRunId(),
+          attemptId: idFactory.nextAttemptId(),
+          modelCallId: idFactory.nextModelCallId(),
+          workspaceRoot: process.cwd(),
+          sandboxProfile: "host-workspace-v1",
+          totalRunToolCalls: 0,
+        };
+        const [outcome] = await runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("r1c_policy"),
+              modelCallId: context.modelCallId,
+              ordinal: 1,
+              toolName: "test.side_effect",
+              rawArguments: { path: "original.txt" },
+            },
+          ],
+          context,
+        );
+        expect(outcome!.error?.code).toBe("TOOL_POLICY_DENIED");
+        expect(approvals).toBe(0);
+        expect(ioCount).toBe(0);
+        expect(events).not.toContain("tool.started");
+      },
+    );
+
+    it("uses admitted authority and exact approved/rechecked constraints after a deterministic policy barrier", async () => {
+      const idFactory = createSequentialIdFactory();
+      const registry = new ToolRegistry();
+      let executorContext: any;
+      registry.register(
+        sideEffectRegistration(async (_args, context) => {
+          executorContext = context;
+          return { done: true };
+        }),
+      );
+      registry.freeze();
+      let releasePolicy!: () => void;
+      const policyEntered = new Promise<void>((resolve) => {
+        const release = resolve;
+        releasePolicy = release;
+      });
+      let signalPolicyEntered!: () => void;
+      const policyStarted = new Promise<void>((resolve) => {
+        signalPolicyEntered = resolve;
+      });
+      let policyCalls = 0;
+      const policy = {
+        evaluateInvocation: async () => {
+          policyCalls++;
+          if (policyCalls === 1) {
+            signalPolicyEntered();
+            await policyEntered;
+          }
+          return validPolicy("require-approval");
+        },
+      };
+      const approvals = new ApprovalCoordinator(idFactory, 5000);
+      let approvedBinding: any;
+      const runtime = new ToolRuntime(registry, policy as any, approvals);
+      const context: ToolBatchContext = {
+        agentId: createAgentId("primary"),
+        sessionKey: createSessionKey("agent:primary:test"),
+        sessionId: idFactory.nextSessionId(),
+        runId: idFactory.nextRunId(),
+        attemptId: idFactory.nextAttemptId(),
+        modelCallId: idFactory.nextModelCallId(),
+        workspaceRoot: "/original/workspace",
+        sandboxProfile: "original-sandbox",
+        totalRunToolCalls: 0,
+      };
+      const admitted = { ...context };
+      approvals.onRequest((binding) => {
+        approvedBinding = binding;
+        approvals.resolveApproval(
+          binding.approvalId,
+          admitted.runId,
+          "allow-once",
+        );
+      });
+      const result = runtime.executeBatch(
+        [
+          {
+            toolCallId: createToolCallId("r1c_snapshot"),
+            modelCallId: context.modelCallId,
+            ordinal: 1,
+            toolName: "test.side_effect",
+            rawArguments: { path: "original.txt" },
+          },
+        ],
+        context,
+      );
+
+      await policyStarted;
+      Object.assign(context as any, {
+        agentId: "mutated-agent",
+        sessionKey: "mutated-session-key",
+        sessionId: "mutated-session-id",
+        runId: "mutated-run",
+        attemptId: "mutated-attempt",
+        modelCallId: "mutated-model-call",
+        workspaceRoot: "/mutated/workspace",
+        sandboxProfile: "mutated-sandbox",
+        totalRunToolCalls: 999,
+      });
+      releasePolicy();
+      const [outcome] = await result;
+
+      expect(outcome!.ok).toBe(true);
+      expect(approvedBinding).toMatchObject({
+        agentId: admitted.agentId,
+        sessionKey: admitted.sessionKey,
+        sessionId: admitted.sessionId,
+        runId: admitted.runId,
+        attemptId: admitted.attemptId,
+        modelCallId: admitted.modelCallId,
+        sandboxProfile: "original-sandbox",
+      });
+      expect(executorContext).toMatchObject({
+        agentId: admitted.agentId,
+        workspaceRoot: "/original/workspace",
+        sandboxProfile: "original-sandbox",
+        targetPath: "original.txt",
+        policyConstraints: { scope: "original" },
+        inputLimits: { maxBytes: 100 },
+        outputLimits: { maxBytes: 100 },
+      });
+      expect(
+        JSON.stringify({ approvedBinding, executorContext }),
+      ).not.toContain("mutated");
+    });
+  });
 });

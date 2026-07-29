@@ -871,17 +871,13 @@ export class AgentRuntime {
               // Check invariant for admitted outcomes before transcript commit
               for (const out of outcomes) {
                 if (!out.normalizedArguments) {
-                  const isUnadmitted =
-                    !out.ok &&
-                    out.terminalState === "failed-before-known-side-effect" &&
-                    (out.error?.code === "TOOL_NOT_FOUND" ||
-                      out.error?.code === "TOOL_ARGUMENTS_INVALID");
-                  if (!isUnadmitted) {
-                    throw new AppError(
-                      "TOOL_IMPLEMENTATION_FAILED",
-                      `Admitted tool outcome for '${out.toolName}' missing normalized arguments`,
-                    );
-                  }
+                  // An unadmitted request has no canonical arguments. It cannot
+                  // be represented as a normal tool-call without fabrication;
+                  // fail the whole cycle before this atomic batch is assembled.
+                  throw new AppError(
+                    "TOOL_IMPLEMENTATION_FAILED",
+                    `Tool outcome for '${out.toolName}' missing normalized arguments`,
+                  );
                 }
               }
 
@@ -902,13 +898,20 @@ export class AgentRuntime {
                 const out =
                   outcomes.find((o) => o.toolCallId === req.toolCallId) ??
                   outcomes[i]!;
+                const normalizedArguments = out.normalizedArguments;
+                if (!normalizedArguments) {
+                  throw new AppError(
+                    "TOOL_IMPLEMENTATION_FAILED",
+                    `Tool outcome for '${out.toolName}' missing normalized arguments`,
+                  );
+                }
                 batchEntries.push({
                   type: "tool-call",
                   id: `tcall-${req.toolCallId}`,
                   modelCallId,
                   toolCallId: req.toolCallId,
                   toolName: req.toolName,
-                  arguments: out.normalizedArguments ?? {},
+                  arguments: normalizedArguments,
                   ordinal: req.ordinal,
                   createdAt: new Date().toISOString(),
                 });

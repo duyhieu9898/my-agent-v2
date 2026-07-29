@@ -11,7 +11,11 @@ import type {
 } from "../core/identities.js";
 
 import type { ApprovalCoordinator } from "../policy/approval-coordinator.js";
-import type { WorkspacePolicy } from "../policy/workspace-policy.js";
+import type {
+  InvocationPolicyResult,
+  PolicyDecisionType,
+  WorkspacePolicy,
+} from "../policy/workspace-policy.js";
 import {
   canonicalJsonStringify,
   deepFreeze,
@@ -55,6 +59,61 @@ export type ToolEventListener = (event: {
   parentOperationId?: string;
   data?: Record<string, unknown>;
 }) => void;
+
+type InvocationPolicySnapshot = Readonly<{
+  decision: PolicyDecisionType;
+  reason: string;
+  policyProfile: string;
+  policyVersion: string;
+  targetPath?: string;
+  policyConstraints: Record<string, unknown>;
+  redactionMetadata: Record<string, unknown>;
+}>;
+
+function snapshotInvocationPolicy(
+  result: unknown,
+): InvocationPolicySnapshot | undefined {
+  if (!result || typeof result !== "object") return undefined;
+  const candidate = result as Partial<InvocationPolicyResult>;
+  if (
+    !["allow", "deny", "require-approval"].includes(candidate.decision ?? "") ||
+    typeof candidate.reason !== "string" ||
+    candidate.reason.length === 0 ||
+    typeof candidate.policyProfile !== "string" ||
+    candidate.policyProfile.length === 0 ||
+    typeof candidate.policyVersion !== "string" ||
+    candidate.policyVersion.length === 0 ||
+    !candidate.policyConstraints ||
+    typeof candidate.policyConstraints !== "object" ||
+    Array.isArray(candidate.policyConstraints) ||
+    !candidate.redactionMetadata ||
+    typeof candidate.redactionMetadata !== "object" ||
+    Array.isArray(candidate.redactionMetadata) ||
+    (candidate.targetPath !== undefined &&
+      typeof candidate.targetPath !== "string") ||
+    (candidate.decision !== "deny" &&
+      (typeof candidate.targetPath !== "string" ||
+        candidate.targetPath.length === 0))
+  ) {
+    return undefined;
+  }
+
+  try {
+    return deepFreeze({
+      decision: candidate.decision as PolicyDecisionType,
+      reason: candidate.reason,
+      policyProfile: candidate.policyProfile,
+      policyVersion: candidate.policyVersion,
+      ...(candidate.targetPath !== undefined
+        ? { targetPath: candidate.targetPath }
+        : {}),
+      policyConstraints: strictJsonSnapshot(candidate.policyConstraints),
+      redactionMetadata: strictJsonSnapshot(candidate.redactionMetadata),
+    });
+  } catch {
+    return undefined;
+  }
+}
 
 export class ToolRuntime {
   private readonly limits: Required<ToolRuntimeConfig>;
@@ -127,7 +186,10 @@ export class ToolRuntime {
     batchContext: ToolBatchContext,
     signal?: AbortSignal,
   ): Promise<NormalizedToolOutcome[]> {
-    const { runId, workspaceRoot } = batchContext;
+    // Admission owns the authority used after the first await. Do not retain a
+    // caller-owned batch context across policy, approval, or execution.
+    const admittedBatchContext = deepFreeze({ ...batchContext });
+    const { runId, workspaceRoot } = admittedBatchContext;
 
     if (requests.length > this.limits.maxToolCallsPerBatch) {
       throw new AppError(
@@ -137,12 +199,12 @@ export class ToolRuntime {
     }
 
     if (
-      batchContext.totalRunToolCalls + requests.length >
+      admittedBatchContext.totalRunToolCalls + requests.length >
       this.limits.maxToolCallsPerRun
     ) {
       throw new AppError(
         "TOOL_BUDGET_EXHAUSTED",
-        `Run tool calls ${batchContext.totalRunToolCalls + requests.length} exceeds maximum per run (${this.limits.maxToolCallsPerRun})`,
+        `Run tool calls ${admittedBatchContext.totalRunToolCalls + requests.length} exceeds maximum per run (${this.limits.maxToolCallsPerRun})`,
       );
     }
 
@@ -267,11 +329,23 @@ export class ToolRuntime {
         };
       }
 
-      const impl = this.registry.getInternalImplementation(req.toolName);
-      if (!impl) {
+      let polResult: InvocationPolicySnapshot | undefined;
+      try {
+        polResult = snapshotInvocationPolicy(
+          await this.policy.evaluateInvocation(
+            tool,
+            normalizedArguments,
+            workspaceRoot,
+          ),
+        );
+      } catch {
+        polResult = undefined;
+      }
+
+      if (!polResult) {
         const err = new AppError(
-          "TOOL_NOT_FOUND",
-          `Tool implementation '${req.toolName}' is missing`,
+          "TOOL_POLICY_DENIED",
+          `Policy returned invalid authority for tool '${req.toolName}'`,
         );
         this.emitEvent("tool.failed", runId, {
           toolCallId: req.toolCallId,
@@ -288,12 +362,6 @@ export class ToolRuntime {
           durationMs: Date.now() - startTime,
         };
       }
-
-      const polResult = await this.policy.evaluateInvocation(
-        tool,
-        normalizedArguments,
-        workspaceRoot,
-      );
 
       this.emitEvent("policy.evaluated", runId, {
         toolCallId: req.toolCallId,
@@ -324,22 +392,72 @@ export class ToolRuntime {
         };
       }
 
+      if (
+        tool.effectClassification === "side-effecting" &&
+        polResult.decision !== "require-approval"
+      ) {
+        const err = new AppError(
+          "TOOL_POLICY_DENIED",
+          `Side-effecting tool '${req.toolName}' requires explicit approval authority`,
+        );
+        this.emitEvent("tool.failed", runId, {
+          toolCallId: req.toolCallId,
+          data: { error: err.message, code: err.code },
+        });
+        return {
+          toolCallId: req.toolCallId,
+          toolName: req.toolName,
+          ordinal: req.ordinal,
+          terminalState: "failed-before-known-side-effect",
+          ok: false,
+          normalizedArguments,
+          error: { code: err.code, message: err.message },
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      let executionPolicy = polResult;
+
       if (polResult.decision === "require-approval") {
-        const actionSummary = impl.approvalSummaryRenderer(normalizedArguments);
+        let actionSummary: string;
+        try {
+          actionSummary = this.registry.renderApprovalSummary(
+            req.toolName,
+            normalizedArguments,
+          );
+        } catch (cause) {
+          const err =
+            cause instanceof AppError
+              ? cause
+              : new AppError(
+                  "TOOL_IMPLEMENTATION_FAILED",
+                  `Failed to render approval summary for '${req.toolName}'`,
+                );
+          return {
+            toolCallId: req.toolCallId,
+            toolName: req.toolName,
+            ordinal: req.ordinal,
+            terminalState: "failed-before-known-side-effect",
+            ok: false,
+            normalizedArguments,
+            error: { code: err.code, message: err.message },
+            durationMs: Date.now() - startTime,
+          };
+        }
 
         const approvalStatus = await this.approvalCoordinator.requestApproval({
-          agentId: batchContext.agentId,
-          sessionKey: batchContext.sessionKey,
-          sessionId: batchContext.sessionId,
-          runId: batchContext.runId,
-          attemptId: batchContext.attemptId,
-          modelCallId: batchContext.modelCallId,
+          agentId: admittedBatchContext.agentId,
+          sessionKey: admittedBatchContext.sessionKey,
+          sessionId: admittedBatchContext.sessionId,
+          runId: admittedBatchContext.runId,
+          attemptId: admittedBatchContext.attemptId,
+          modelCallId: admittedBatchContext.modelCallId,
           toolCallId: req.toolCallId,
           toolName: req.toolName,
           normalizedArguments,
           workspaceRoot,
           executionTarget: tool.executionTarget,
-          sandboxProfile: batchContext.sandboxProfile,
+          sandboxProfile: admittedBatchContext.sandboxProfile,
           sandboxRequirement: tool.sandboxRequirement,
           actionSummary,
           decision: polResult.decision,
@@ -417,18 +535,18 @@ export class ToolRuntime {
 
         const validBinding =
           binding &&
-          binding.agentId === batchContext.agentId &&
-          binding.sessionKey === batchContext.sessionKey &&
-          binding.sessionId === batchContext.sessionId &&
-          binding.runId === batchContext.runId &&
-          binding.attemptId === batchContext.attemptId &&
-          binding.modelCallId === batchContext.modelCallId &&
+          binding.agentId === admittedBatchContext.agentId &&
+          binding.sessionKey === admittedBatchContext.sessionKey &&
+          binding.sessionId === admittedBatchContext.sessionId &&
+          binding.runId === admittedBatchContext.runId &&
+          binding.attemptId === admittedBatchContext.attemptId &&
+          binding.modelCallId === admittedBatchContext.modelCallId &&
           binding.toolCallId === req.toolCallId &&
           binding.toolName === req.toolName &&
           binding.normalizedArgumentDigest === currentArgDigest &&
           binding.workspaceDigest === currentWorkspaceDigest &&
           binding.executionTarget === tool.executionTarget &&
-          binding.sandboxProfile === batchContext.sandboxProfile &&
+          binding.sandboxProfile === admittedBatchContext.sandboxProfile &&
           binding.sandboxRequirement === tool.sandboxRequirement &&
           binding.decision === polResult.decision &&
           binding.policyProfile === polResult.policyProfile &&
@@ -461,11 +579,18 @@ export class ToolRuntime {
           };
         }
 
-        const recheckPolicy = await this.policy.evaluateInvocation(
-          tool,
-          normalizedArguments,
-          workspaceRoot,
-        );
+        let recheckPolicy: InvocationPolicySnapshot | undefined;
+        try {
+          recheckPolicy = snapshotInvocationPolicy(
+            await this.policy.evaluateInvocation(
+              tool,
+              normalizedArguments,
+              workspaceRoot,
+            ),
+          );
+        } catch {
+          recheckPolicy = undefined;
+        }
 
         const recheckConstraintsDigest =
           this.approvalCoordinator.computeCanonicalDigest(
@@ -508,20 +633,21 @@ export class ToolRuntime {
             durationMs: Date.now() - startTime,
           };
         }
+        executionPolicy = recheckPolicy!;
       }
 
       const execContext: ToolExecutionContext = {
-        agentId: batchContext.agentId,
+        agentId: admittedBatchContext.agentId,
         workspaceRoot,
-        targetPath: (normalizedArguments["path"] as string) ?? "",
+        targetPath: executionPolicy.targetPath ?? "",
         toolCallId: req.toolCallId,
         deadline:
           Date.now() + Math.min(tool.timeoutMs, this.limits.toolTimeoutMs),
         ...(signal ? { signal } : {}),
         inputLimits: tool.inputLimits,
         outputLimits: tool.outputLimits,
-        policyConstraints: {},
-        sandboxProfile: batchContext.sandboxProfile,
+        policyConstraints: executionPolicy.policyConstraints,
+        sandboxProfile: admittedBatchContext.sandboxProfile,
       };
 
       if (signal?.aborted) {
@@ -566,7 +692,7 @@ export class ToolRuntime {
         });
 
         const result = await Promise.race([
-          impl.execute(normalizedArguments, execContext),
+          this.registry.execute(req.toolName, normalizedArguments, execContext),
           timeoutPromise,
         ]).finally(() => {
           clearTimeout(timer!);
