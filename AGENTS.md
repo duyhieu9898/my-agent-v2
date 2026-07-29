@@ -30,3 +30,9 @@ SQLite intake, story, trace, scoring, audit, and proposal commands are optional
 compatibility features. Use them only when explicitly requested or required by
 an external orchestrator.
 <!-- HARNESS:END -->
+
+## CLI execution protocol
+
+Before any implementation, remediation, evidence collection, live verification,
+or synchronization task, read and follow `docs/CLI_EXECUTOR_PROTOCOL.md`.
+

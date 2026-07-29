@@ -54,8 +54,8 @@ resume_existing_report() {
   local existing_task existing_outcome existing_baseline existing_result
   existing_task="$(checkpoint_value "$report_path" "Task ID" || true)"
   existing_outcome="$(checkpoint_value "$report_path" "Outcome type" || true)"
-  existing_baseline="$(checkpoint_value "$report_path" "Baseline" || true)"
-  existing_result="$(checkpoint_value "$report_path" "Result" || true)"
+  existing_baseline="$(checkpoint_value "$report_path" "Baseline commit" || true)"
+  existing_result="$(checkpoint_value "$report_path" "Resulting commit" || true)"
 
   if [[ "$existing_task" == "$task_id" &&
         "$existing_outcome" == "$outcome_type" &&
@@ -83,16 +83,15 @@ check_report() {
   fi
 
   require_heading "$report_path" "# CLI Report"
-  require_heading "$report_path" "## Checkpoint"
-  require_heading "$report_path" "## Outcome"
-  require_heading "$report_path" "## Changed files"
+  require_heading "$report_path" "## Task contract"
+  require_heading "$report_path" "## Commit metadata"
+  require_heading "$report_path" "## Changed scope"
   require_heading "$report_path" "## Validation"
-  require_heading "$report_path" "## Evidence"
-  require_heading "$report_path" "## Open observations"
+  require_heading "$report_path" "## Commit and push result"
+  require_heading "$report_path" "## Deviations and stop conditions"
+  require_heading "$report_path" "## Provisional findings"
   require_heading "$report_path" "### Blocking"
   require_heading "$report_path" "### P2"
-  require_heading "$report_path" "### Deviations"
-  require_heading "$report_path" "## Repository state after task"
   require_heading "$report_path" "## Next ChatGPT action"
   require_heading "$report_path" "## Final statement"
 
@@ -146,23 +145,7 @@ create_report() {
   branch="${branch:-DETACHED}"
   head_message="$(git -C "$repo_root" log -1 --pretty=%s)"
 
-  local tracking_status upstream behind ahead
-  if upstream="$(
-    git -C "$repo_root" rev-parse \
-      --abbrev-ref \
-      --symbolic-full-name \
-      '@{upstream}' \
-      2>/dev/null
-  )"; then
-    read -r behind ahead < <(
-      git -C "$repo_root" rev-list --left-right --count "${upstream}...HEAD"
-    )
-    tracking_status="local ref ${upstream}: HEAD is ${ahead} ahead / ${behind} behind; remote not fetched"
-  else
-    tracking_status="no upstream configured"
-  fi
-
-  local changed_files change_stat repository_state local_changes
+  local changed_files change_stat
   changed_files="$(
     git -C "$repo_root" diff --name-status "${initial_head}..${resulting_head}" ||
       true
@@ -171,39 +154,28 @@ create_report() {
     git -C "$repo_root" diff --stat "${initial_head}..${resulting_head}" ||
       true
   )"
-  repository_state="$(git -C "$repo_root" status --short --branch)"
-  local_changes="$(
-    {
-      git -C "$repo_root" diff --cached --name-status
-      git -C "$repo_root" diff --name-status
-      git -C "$repo_root" ls-files --others --exclude-standard | sed 's/^/?? /'
-    } | sed '/^$/d' || true
-  )"
 
   changed_files="${changed_files:-none}"
   change_stat="${change_stat:-none}"
-  local_changes="${local_changes:-none}"
 
   mkdir -p "$(dirname "$output_path")"
 
   cat >"$output_path" <<EOF
 # CLI Report
 
-## Checkpoint
+## Task contract
 
 - Task ID: \`${task_id}\`
 - Outcome type: \`${outcome_type}\`
+
+## Commit metadata
+
 - Branch: \`${branch}\`
-- Baseline: \`${initial_head}\`
-- Result: \`${resulting_head}\`
-- Commit: \`${head_message}\`
-- Upstream tracking: ${tracking_status}
+- Baseline commit: \`${initial_head}\`
+- Resulting commit: \`${resulting_head}\`
+- Commit message: \`${head_message}\`
 
-## Outcome
-
-<<FILL: Describe the observable task outcome.>>
-
-## Changed files
+## Changed scope
 
 \`\`\`text
 ${changed_files}
@@ -217,16 +189,19 @@ ${change_stat}
 
 | Command | Result |
 | --- | --- |
-| <<FILL: exact command, including git push when required>> | <<FILL: PASS/FAIL and useful counts>> |
+| <<FILL: exact command>> | <<FILL: PASS/FAIL and useful counts>> |
 
-## Evidence
+## Commit and push result
 
-<<FILL: Add the strongest source, test, migration, runtime, transcript, and required push evidence.>>
+<<FILL: Record exact push command, pushed commit SHA/ref, and push output, or "Push not required.">>
 
-## Open observations
+## Deviations and stop conditions
 
-CLI classifications below are provisional execution evidence. ChatGPT owns final
-classification and closure verdict.
+<<FILL: Task deviations or stop conditions encountered, or "None observed.">>
+
+## Provisional findings
+
+CLI classifications below are provisional execution evidence. ChatGPT owns final classification and closure verdict.
 
 ### Blocking
 
@@ -235,22 +210,6 @@ classification and closure verdict.
 ### P2
 
 <<FILL: Exact P2 items or "None observed.">>
-
-### Deviations
-
-<<FILL: Task deviations or "None observed.">>
-
-## Repository state after task
-
-\`\`\`text
-${repository_state}
-\`\`\`
-
-Local changes not included in the checkpoint:
-
-\`\`\`text
-${local_changes}
-\`\`\`
 
 ## Next ChatGPT action
 

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Checkpoint Handoff"
+  short_description: "Create concise pushed-checkpoint handoffs"
+  default_prompt: "Create a concise checkpoint handoff from the current pushed repository state."
+
+policy:
+  allow_implicit_invocation: false

@@ -20,13 +20,15 @@ Repository authority remains higher than this protocol:
 
 Read the authority and files named by the task.
 
-Check:
+Verify baseline repository state using the standardized checkpoint evidence block:
 
 ```bash
 git rev-parse --show-toplevel
 git rev-parse HEAD
 git branch --show-current
 git status --short --branch
+git rev-parse --abbrev-ref '@{upstream}'
+git rev-list --left-right --count '@{upstream}...HEAD'
 git log --oneline -5
 git diff --stat
 git diff --check
@@ -77,9 +79,65 @@ Evidence-only tasks may finish without a new commit when no durable source chang
 
 A commit does not imply milestone closure.
 
-## Report
+## Checkpoint Evidence Standard
 
-Create a report only when the task explicitly requires one.
+Standardize checkpoint evidence checking using this fixed block:
+
+```bash
+git rev-parse HEAD
+git branch --show-current
+git status --short --branch
+git rev-parse --abbrev-ref '@{upstream}'
+git rev-list --left-right --count '@{upstream}...HEAD'
+```
+
+A checkpoint is valid when:
+- **HEAD**: `<commit>`
+- **branch**: `<expected branch>`
+- **working tree**: `clean`
+- **upstream**: `<expected remote branch>`
+- **divergence**: `0 0` (0 commits behind, 0 commits ahead)
+
+## Report & Handoff Rules
+
+### Artifact Roles
+
+- **Git**: Source truth (commits, refs, pushed states, diffs).
+- **$agent-report**: Concise execution evidence.
+- **handoff**: Context transfer (created ONLY at context boundaries, never for routine checkpoints).
+- **ChatGPT audit**: Closure verdict and final classification authority.
+- **user**: Acceptance authority.
+
+### When Report Is Required vs. Optional
+
+Do NOT require a report for every task. Follow this single rule:
+
+**Report required:**
+- implementation checkpoint needing ChatGPT source review;
+- remediation;
+- evidence-only verification;
+- live verification;
+- important synchronization;
+- task with commit/push or complex validation.
+
+**Report optional:**
+- docs typo;
+- formatting;
+- small changes directly verifiable from commit;
+- pure Git operations without changing source.
+
+Tasks requiring a report must state clearly in the prompt:
+
+```text
+Use $agent-report after validation and any requested commit/push.
+Task ID: <task-id>
+Outcome: <outcome-type>
+Baseline: <baseline-commit>
+```
+
+### Report Execution
+
+When a report is required:
 
 After validation and any requested commit/push, invoke:
 
@@ -95,37 +153,32 @@ Provide or preserve these inputs from the task contract:
 
 The skill must:
 
-- collect Git metadata from the current repository;
+- collect baseline and resulting commit metadata from the current repository;
 - require the baseline to be an ancestor of the resulting `HEAD`;
 - create or resume the matching report under `.agent-reports/`;
 - fill semantic execution evidence from the current task;
 - validate structural completeness with its internal script;
 - print the absolute report path.
 
-The report must identify:
+The report must focus strictly on concise execution evidence without process narrative storytelling or lengthy source code explanations:
 
+- task contract (task ID, outcome type);
 - baseline and resulting commit;
-- branch and local upstream-tracking state;
-- actual push command/result when push was required;
-- outcome;
-- changed files;
-- validation;
-- strongest evidence locators;
-- provisional blocking findings, P2, and deviations;
-- remaining local changes;
+- exact changed scope;
+- validation commands and results;
+- commit/push result (concrete Git evidence: push command, pushed commit SHA/ref, remote output);
+- deviations or stop conditions;
+- provisional blocking findings and P2 items;
 - next ChatGPT action;
-- task-specific runtime or migration status only when relevant.
+- non-verdict final statement.
 
-CLI classifications are provisional execution evidence. ChatGPT owns final finding
-classification and closure verdict.
+CLI classifications are provisional execution evidence. ChatGPT owns final finding classification and closure verdict.
 
-The skill's structural check verifies report shape and completeness only. It does
-not verify that commands ran, evidence is true, or classifications are correct.
+The skill's structural check verifies report shape and completeness only. It does not verify that commands ran, evidence is true, or classifications are correct.
 
 Do not include secrets or unrestricted sensitive logs.
 
-Use a completion statement only when required execution and validation completed,
-and any required commit/push succeeded.
+Use a completion statement only when required execution and validation completed, and any required commit/push succeeded.
 
 For completed implementation or remediation:
 
@@ -146,3 +199,28 @@ Execution incomplete; findings recorded for ChatGPT review.
 ```
 
 Print the absolute report path when finished.
+
+### Strict Handoff Conditions
+
+Handoff documents are created ONLY at context boundaries, not after every task or routine checkpoint.
+
+**Create handoff when:**
+- switching chat/session;
+- changing milestone;
+- finishing a long workstream;
+- stopping work to continue another day;
+- current context window is getting too long.
+
+**Do NOT create handoff when:**
+- just committed a small task;
+- report is sufficient and continuing work in the same session;
+- just moving from a minor remediation to audit.
+
+**Handoff content structure (locators and status only; do NOT copy full reports or narrative history):**
+- checkpoint (HEAD SHA)
+- branch/upstream state
+- accepted verdict
+- active-plan path
+- report locator
+- blocking/P2 items
+- next outcome
