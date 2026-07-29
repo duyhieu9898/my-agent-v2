@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import AjvModule from "ajv";
 import { AppError } from "../core/errors.js";
-import type { ToolDescriptor } from "./contracts.js";
+import {
+  canonicalJsonStringify,
+  deepFreeze,
+  type ToolDescriptor,
+} from "./contracts.js";
 
 const Ajv = AjvModule.default ?? AjvModule;
 const ajv = new Ajv({ allErrors: true, strict: false });
@@ -41,18 +45,38 @@ export class ToolRegistry {
     const argValidate = ajv.compile(tool.argumentSchema);
     const resValidate = ajv.compile(tool.resultSchema);
 
-    if (tool.redactionRules && !Object.isFrozen(tool.redactionRules)) {
-      Object.freeze(tool.redactionRules);
-    }
-    if (tool.inputLimits && !Object.isFrozen(tool.inputLimits)) {
-      Object.freeze(tool.inputLimits);
-    }
-    if (tool.outputLimits && !Object.isFrozen(tool.outputLimits)) {
-      Object.freeze(tool.outputLimits);
-    }
-    const frozenTool = Object.isFrozen(tool) ? tool : Object.freeze(tool);
+    const metadata = JSON.parse(
+      JSON.stringify({
+        name: tool.name,
+        descriptorVersion: tool.descriptorVersion,
+        owningModule: tool.owningModule,
+        description: tool.description,
+        argumentSchema: tool.argumentSchema,
+        resultSchema: tool.resultSchema,
+        effectClassification: tool.effectClassification,
+        sensitivityClassification: tool.sensitivityClassification,
+        executionTarget: tool.executionTarget,
+        sandboxRequirement: tool.sandboxRequirement,
+        timeoutMs: tool.timeoutMs,
+        cancellationSupport: tool.cancellationSupport,
+        concurrencyTrait: tool.concurrencyTrait,
+        idempotencyTrait: tool.idempotencyTrait,
+        approvalSummaryRendererVersion:
+          tool.approvalSummaryRendererVersion ?? "1.0.0",
+        redactionRules: tool.redactionRules,
+        inputLimits: tool.inputLimits,
+        outputLimits: tool.outputLimits,
+        progressFingerprintVersion: tool.progressFingerprintVersion,
+      }),
+    );
 
-    this.tools.set(tool.name, frozenTool);
+    const publishedDescriptor: ToolDescriptor = deepFreeze({
+      ...metadata,
+      execute: tool.execute,
+      approvalSummaryRenderer: tool.approvalSummaryRenderer,
+    });
+
+    this.tools.set(tool.name, publishedDescriptor);
     this.compiledSchemas.set(tool.name, { argValidate, resValidate });
     this.cachedFingerprint = null;
   }
@@ -75,7 +99,7 @@ export class ToolRegistry {
   }
 
   public computeToolFingerprint(tool: ToolDescriptor): string {
-    const canonical = JSON.stringify({
+    const serializable = {
       name: tool.name,
       descriptorVersion: tool.descriptorVersion,
       owningModule: tool.owningModule,
@@ -90,12 +114,15 @@ export class ToolRegistry {
       cancellationSupport: tool.cancellationSupport,
       concurrencyTrait: tool.concurrencyTrait,
       idempotencyTrait: tool.idempotencyTrait,
+      approvalSummaryRendererVersion:
+        tool.approvalSummaryRendererVersion ?? "1.0.0",
       redactionRules: tool.redactionRules,
       inputLimits: tool.inputLimits,
       outputLimits: tool.outputLimits,
       progressFingerprintVersion: tool.progressFingerprintVersion,
-    });
+    };
 
+    const canonical = canonicalJsonStringify(serializable);
     return createHash("sha256").update(canonical).digest("hex");
   }
 

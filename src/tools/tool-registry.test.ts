@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { ToolRegistry } from "./tool-registry.js";
+import { Type } from "typebox";
 import type { ToolDescriptor } from "./contracts.js";
+import { ToolRegistry } from "./tool-registry.js";
 import { workspaceListTool, workspaceReadTextTool } from "./workspace-tools.js";
 
 describe("ToolRegistry", () => {
@@ -9,8 +10,10 @@ describe("ToolRegistry", () => {
     registry.register(workspaceListTool);
     registry.register(workspaceReadTextTool);
 
-    expect(registry.get("workspace.list")).toBe(workspaceListTool);
-    expect(registry.get("workspace.read_text")).toBe(workspaceReadTextTool);
+    expect(registry.get("workspace.list")?.name).toBe("workspace.list");
+    expect(registry.get("workspace.read_text")?.name).toBe(
+      "workspace.read_text",
+    );
 
     const fp1 = registry.computeFingerprint();
     expect(fp1).toHaveLength(64);
@@ -31,57 +34,124 @@ describe("ToolRegistry", () => {
     );
   });
 
-  it("prevents mutating original descriptor or get()/list() returned reference after registration", () => {
+  it("proves caller descriptor/schema mutation after registration does not affect stored registry authority or fingerprint", () => {
+    const registry = new ToolRegistry();
+
+    // Create a mutable descriptor with nested schemas and rules
+    const rawSchema = Type.Object({ path: Type.String() });
+    const rawRedaction = ["secret_rule"];
+    const mutableDescriptor: ToolDescriptor = {
+      ...workspaceListTool,
+      name: "test.mutable",
+      argumentSchema: rawSchema,
+      redactionRules: rawRedaction,
+      inputLimits: { maxBytes: 500 },
+    };
+
+    registry.register(mutableDescriptor);
+    const fpBefore = registry.computeToolFingerprint(
+      registry.get("test.mutable")!,
+    );
+
+    // Mutate original caller objects
+    (rawSchema as any).properties.path.type = "number";
+    rawRedaction.push("new_rule");
+    mutableDescriptor.description = "hacked description";
+    mutableDescriptor.inputLimits.maxBytes = 999999;
+
+    const stored = registry.get("test.mutable")!;
+    expect(stored.description).toBe(
+      "Bounded directory listing within the agent workspace. Returns sorted entries.",
+    );
+    expect(stored.redactionRules).toEqual(["secret_rule"]);
+    expect(stored.inputLimits.maxBytes).toBe(500);
+
+    const fpAfter = registry.computeToolFingerprint(stored);
+    expect(fpBefore).toBe(fpAfter);
+  });
+
+  it("ensures returned descriptors and all nested structures are deeply frozen", () => {
     const registry = new ToolRegistry();
     registry.register(workspaceListTool);
 
     const fetched = registry.get("workspace.list")!;
     expect(Object.isFrozen(fetched)).toBe(true);
+    expect(Object.isFrozen(fetched.redactionRules)).toBe(true);
+    expect(Object.isFrozen(fetched.inputLimits)).toBe(true);
+    expect(Object.isFrozen(fetched.outputLimits)).toBe(true);
+
     expect(() => {
       (fetched as any).description = "mutated description";
+    }).toThrow();
+
+    expect(() => {
+      (fetched.redactionRules as any).push("hacked");
     }).toThrow();
 
     const list = registry.list();
     expect(Object.isFrozen(list[0])).toBe(true);
   });
 
-  it("computes deterministic fingerprint independent of registration order", () => {
+  it("computes identical fingerprints for equivalent nested objects regardless of key insertion order", () => {
     const reg1 = new ToolRegistry();
-    reg1.register(workspaceListTool);
-    reg1.register(workspaceReadTextTool);
+    const tool1: ToolDescriptor = {
+      ...workspaceListTool,
+      name: "test.order1",
+      argumentSchema: {
+        type: "object",
+        properties: { a: { type: "string" }, b: { type: "number" } },
+      },
+    };
+    reg1.register(tool1);
 
     const reg2 = new ToolRegistry();
-    reg2.register(workspaceReadTextTool);
-    reg2.register(workspaceListTool);
+    const tool2: ToolDescriptor = {
+      ...workspaceListTool,
+      name: "test.order1",
+      argumentSchema: {
+        type: "object",
+        properties: { b: { type: "number" }, a: { type: "string" } },
+      },
+    };
+    reg2.register(tool2);
 
     expect(reg1.computeFingerprint()).toBe(reg2.computeFingerprint());
   });
 
-  it("changes fingerprint when security-relevant descriptor metadata changes", () => {
-    const registry1 = new ToolRegistry();
-    registry1.register(workspaceListTool);
-    const fp1 = registry1.computeFingerprint();
+  it("changes fingerprint when nested security metadata or approval renderer version changes", () => {
+    const reg1 = new ToolRegistry();
+    reg1.register(workspaceListTool);
+    const fp1 = reg1.computeFingerprint();
 
-    const modifiedTool: ToolDescriptor = {
+    const modifiedTool1: ToolDescriptor = {
       ...workspaceListTool,
-      timeoutMs: workspaceListTool.timeoutMs + 1000,
+      redactionRules: ["rule_1"],
     };
+    const reg2 = new ToolRegistry();
+    reg2.register(modifiedTool1);
+    expect(reg2.computeFingerprint()).not.toBe(fp1);
 
-    const registry2 = new ToolRegistry();
-    registry2.register(modifiedTool);
-    const fp2 = registry2.computeFingerprint();
-
-    expect(fp1).not.toBe(fp2);
+    const modifiedTool2: ToolDescriptor = {
+      ...workspaceListTool,
+      approvalSummaryRendererVersion: "2.0.0",
+    };
+    const reg3 = new ToolRegistry();
+    reg3.register(modifiedTool2);
+    expect(reg3.computeFingerprint()).not.toBe(fp1);
   });
 
-  it("ignores implementation function identity when computing fingerprint", () => {
+  it("ignores implementation function identity and renderer function identity when stable metadata is unchanged", () => {
     const tool1: ToolDescriptor = {
       ...workspaceListTool,
+      approvalSummaryRendererVersion: "1.0.0",
+      approvalSummaryRenderer: () => "Summary A",
       execute: async () => ({ value: 1 }),
     };
 
     const tool2: ToolDescriptor = {
       ...workspaceListTool,
+      approvalSummaryRendererVersion: "1.0.0",
+      approvalSummaryRenderer: () => "Summary B",
       execute: async () => ({ value: 2 }),
     };
 

@@ -41,12 +41,64 @@ export interface ToolDescriptor<TArgs = any, TResult = any> {
   cancellationSupport: boolean;
   concurrencyTrait: ToolConcurrencyTrait;
   idempotencyTrait: boolean;
+  approvalSummaryRendererVersion?: string;
   approvalSummaryRenderer: (args: TArgs) => string;
   redactionRules: string[];
   inputLimits: { maxBytes?: number };
   outputLimits: { maxBytes?: number };
   progressFingerprintVersion: string;
   execute: (args: TArgs, context: ToolExecutionContext) => Promise<TResult>;
+}
+
+export function deepFreeze<T>(obj: T): T {
+  if (obj === null || typeof obj !== "object") {
+    return obj;
+  }
+  if (Object.isFrozen(obj)) {
+    return obj;
+  }
+  Object.freeze(obj);
+  for (const key of Object.getOwnPropertyNames(obj)) {
+    const val = (obj as any)[key];
+    if (
+      val !== null &&
+      (typeof val === "object" || typeof val === "function")
+    ) {
+      deepFreeze(val);
+    }
+  }
+  return obj;
+}
+
+export function canonicalJsonStringify(val: unknown): string {
+  if (
+    val === undefined ||
+    typeof val === "function" ||
+    typeof val === "symbol"
+  ) {
+    throw new Error(`Unsupported non-JSON value: ${String(val)}`);
+  }
+  if (
+    val === null ||
+    typeof val === "boolean" ||
+    typeof val === "number" ||
+    typeof val === "string"
+  ) {
+    return JSON.stringify(val);
+  }
+  if (Array.isArray(val)) {
+    const elements = val.map((item) => canonicalJsonStringify(item));
+    return `[${elements.join(",")}]`;
+  }
+  if (typeof val === "object") {
+    const keys = Object.keys(val).sort();
+    const entries = keys.map(
+      (key) =>
+        `${JSON.stringify(key)}:${canonicalJsonStringify((val as any)[key])}`,
+    );
+    return `{${entries.join(",")}}`;
+  }
+  throw new Error(`Unsupported JSON value: ${String(val)}`);
 }
 
 export type TerminalToolState =

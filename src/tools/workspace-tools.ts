@@ -29,6 +29,7 @@ export const workspaceListTool: ToolDescriptor = {
   cancellationSupport: true,
   concurrencyTrait: "parallel-safe",
   idempotencyTrait: true,
+  approvalSummaryRendererVersion: "1.0.0",
   approvalSummaryRenderer: (args: { path: string }) =>
     `List workspace directory: ${args.path}`,
   redactionRules: [],
@@ -95,6 +96,7 @@ export const workspaceReadTextTool: ToolDescriptor = {
   cancellationSupport: true,
   concurrencyTrait: "parallel-safe",
   idempotencyTrait: true,
+  approvalSummaryRendererVersion: "1.0.0",
   approvalSummaryRenderer: (args: { path: string }) =>
     `Read workspace file: ${args.path}`,
   redactionRules: [],
@@ -184,6 +186,7 @@ export const workspaceWriteTextTool: ToolDescriptor = {
   cancellationSupport: true,
   concurrencyTrait: "sequential",
   idempotencyTrait: false,
+  approvalSummaryRendererVersion: "1.0.0",
   approvalSummaryRenderer: (args: {
     path: string;
     mode: "create" | "replace";

@@ -9,7 +9,10 @@ import {
   createToolCallId,
 } from "../core/identities.js";
 import { createSequentialIdFactory } from "../test/foundation-fixtures.js";
-import { ApprovalCoordinator } from "./approval-coordinator.js";
+import {
+  ApprovalCoordinator,
+  type ApprovalRequestBinding,
+} from "./approval-coordinator.js";
 
 describe("ApprovalCoordinator", () => {
   it("handles requestApproval, notification listener, and allow-once resolution", async () => {
@@ -59,5 +62,89 @@ describe("ApprovalCoordinator", () => {
       "allow-once",
     );
     expect(secondRes.status).toBe("already-resolved");
+  });
+
+  it("prevents listener or accessor mutation from altering stored binding authority", async () => {
+    const idFactory = createSequentialIdFactory();
+    const coordinator = new ApprovalCoordinator(idFactory, 5000);
+    const runId = idFactory.nextRunId();
+
+    let capturedBinding: ApprovalRequestBinding | undefined;
+    coordinator.onRequest((binding) => {
+      capturedBinding = binding;
+      expect(Object.isFrozen(binding)).toBe(true);
+      expect(() => {
+        (binding as any).actionSummary = "hacked summary";
+      }).toThrow();
+    });
+
+    const approvalPromise = coordinator.requestApproval({
+      agentId: createAgentId("primary"),
+      sessionKey: createSessionKey("agent:primary:test"),
+      sessionId: idFactory.nextSessionId(),
+      runId,
+      attemptId: idFactory.nextAttemptId(),
+      modelCallId: idFactory.nextModelCallId(),
+      toolCallId: idFactory.nextToolCallId(),
+      toolName: "workspace.write_text",
+      rawArguments: { path: "hello.txt", content: "test", mode: "create" },
+      executionTarget: "workspace",
+      sandboxProfile: "host-workspace-v1",
+      actionSummary: "Write file hello.txt",
+      policyProfile: "workspace-policy-v1",
+      reason: "write requires approval",
+    });
+
+    expect(capturedBinding).toBeDefined();
+    const fetched = coordinator.getBinding(capturedBinding!.approvalId)!;
+    expect(Object.isFrozen(fetched)).toBe(true);
+    expect(fetched.actionSummary).toBe("Write file hello.txt");
+
+    coordinator.resolveApproval(
+      capturedBinding!.approvalId,
+      runId,
+      "allow-once",
+    );
+    await approvalPromise;
+  });
+
+  it("fails resolution when wrong runId is supplied", async () => {
+    const idFactory = createSequentialIdFactory();
+    const coordinator = new ApprovalCoordinator(idFactory, 5000);
+    const runId = idFactory.nextRunId();
+    const wrongRunId = createRunId("00000000-0000-4000-8000-000000000099");
+
+    let approvalId: string | undefined;
+    coordinator.onRequest((b) => {
+      approvalId = b.approvalId;
+    });
+
+    const approvalPromise = coordinator.requestApproval({
+      agentId: createAgentId("primary"),
+      sessionKey: createSessionKey("agent:primary:test"),
+      sessionId: idFactory.nextSessionId(),
+      runId,
+      attemptId: idFactory.nextAttemptId(),
+      modelCallId: idFactory.nextModelCallId(),
+      toolCallId: idFactory.nextToolCallId(),
+      toolName: "workspace.write_text",
+      rawArguments: { path: "hello.txt" },
+      executionTarget: "workspace",
+      sandboxProfile: "host-workspace-v1",
+      actionSummary: "Write file",
+      policyProfile: "workspace-policy-v1",
+      reason: "write requires approval",
+    });
+
+    const wrongRes = coordinator.resolveApproval(
+      approvalId as any,
+      wrongRunId,
+      "allow-once",
+    );
+    expect(wrongRes.status).toBe("not-found");
+
+    coordinator.cancelPendingForRun(runId);
+    const status = await approvalPromise;
+    expect(status).toBe("cancelled");
   });
 });

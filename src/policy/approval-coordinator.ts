@@ -13,6 +13,8 @@ import type {
   ToolCallId,
 } from "../core/identities.js";
 
+import { canonicalJsonStringify, deepFreeze } from "../tools/contracts.js";
+
 export interface ApprovalRequestBinding {
   approvalId: ApprovalId;
   agentId: AgentId;
@@ -78,7 +80,7 @@ export class ApprovalCoordinator {
 
   public computeDigest(args?: Record<string, unknown>): string {
     const safeArgs = args ?? {};
-    const canonical = JSON.stringify(safeArgs, Object.keys(safeArgs).sort());
+    const canonical = canonicalJsonStringify(safeArgs);
     return createHash("sha256").update(canonical).digest("hex");
   }
 
@@ -132,7 +134,7 @@ export class ApprovalCoordinator {
     const digest = this.computeDigest(normalizedArgs);
     const workspaceDigest = this.computeWorkspaceDigest(params.workspaceRoot);
 
-    const binding: ApprovalRequestBinding = {
+    const binding: ApprovalRequestBinding = deepFreeze({
       approvalId,
       agentId: params.agentId,
       sessionKey: params.sessionKey,
@@ -152,7 +154,7 @@ export class ApprovalCoordinator {
       policyProfile: params.policyProfile,
       policyVersion: params.policyVersion ?? "1.0.0",
       reason: params.reason,
-    };
+    });
 
     this.bindings.set(approvalId, binding);
 

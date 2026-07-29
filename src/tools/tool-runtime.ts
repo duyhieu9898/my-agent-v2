@@ -12,12 +12,14 @@ import type {
 
 import type { ApprovalCoordinator } from "../policy/approval-coordinator.js";
 import type { WorkspacePolicy } from "../policy/workspace-policy.js";
-import type {
-  NormalizedToolOutcome,
-  NormalizedToolRequest,
-  TerminalToolState,
-  ToolDescriptor,
-  ToolExecutionContext,
+import {
+  canonicalJsonStringify,
+  deepFreeze,
+  type NormalizedToolOutcome,
+  type NormalizedToolRequest,
+  type TerminalToolState,
+  type ToolDescriptor,
+  type ToolExecutionContext,
 } from "./contracts.js";
 import type { ToolRegistry } from "./tool-registry.js";
 
@@ -188,12 +190,12 @@ export class ToolRuntime {
         continue;
       }
 
-      const normalizedArguments = Object.freeze(
+      const normalizedArguments = deepFreeze(
         JSON.parse(JSON.stringify(argVal.value)),
       );
 
       const argBytes = Buffer.byteLength(
-        JSON.stringify(normalizedArguments),
+        canonicalJsonStringify(normalizedArguments),
         "utf8",
       );
       if (argBytes > this.limits.maxToolArgumentBytes) {
@@ -412,13 +414,19 @@ export class ToolRuntime {
           normalizedArguments,
           workspaceRoot,
         );
-        if (recheckPolicy.decision === "deny") {
+        if (
+          recheckPolicy.decision === "deny" ||
+          recheckPolicy.policyProfile !== binding?.policyProfile ||
+          recheckPolicy.policyVersion !== binding?.policyVersion ||
+          recheckPolicy.reason !== binding?.reason
+        ) {
           const err = new AppError(
             "TOOL_POLICY_DENIED",
             `Policy denied tool '${req.toolName}' on recheck: ${recheckPolicy.reason}`,
           );
           this.emitEvent("tool.failed", runId, {
             toolCallId: req.toolCallId,
+            ...(approvalId ? { approvalId } : {}),
             data: { error: err.message, code: err.code },
           });
           return {
@@ -458,6 +466,7 @@ export class ToolRuntime {
           ordinal: req.ordinal,
           terminalState: "cancelled-with-no-known-side-effect",
           ok: false,
+          normalizedArguments,
           error: {
             code: "TOOL_CANCELLED",
             message: "Tool execution was cancelled before start",
@@ -489,7 +498,7 @@ export class ToolRuntime {
         });
 
         const result = await Promise.race([
-          tool.execute(req.rawArguments, execContext),
+          tool.execute(normalizedArguments, execContext),
           timeoutPromise,
         ]).finally(() => {
           clearTimeout(timer!);
@@ -521,6 +530,7 @@ export class ToolRuntime {
           ordinal: req.ordinal,
           terminalState: "completed",
           ok: true,
+          normalizedArguments,
           result,
           durationMs: Date.now() - startTime,
         };
@@ -547,6 +557,7 @@ export class ToolRuntime {
           ordinal: req.ordinal,
           terminalState,
           ok: false,
+          normalizedArguments,
           error: { code, message: err.message ?? "Tool execution failed" },
           durationMs: Date.now() - startTime,
         };
@@ -564,6 +575,9 @@ export class ToolRuntime {
             ordinal: item.req.ordinal,
             terminalState: "cancelled-with-no-known-side-effect",
             ok: false,
+            ...(item.normalizedArguments
+              ? { normalizedArguments: item.normalizedArguments }
+              : {}),
             error: {
               code: "TOOL_CANCELLED",
               message: "Tool batch execution was cancelled",

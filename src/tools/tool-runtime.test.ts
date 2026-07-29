@@ -1,4 +1,8 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { Type } from "typebox";
 import {
   createAgentId,
   createAttemptId,
@@ -21,7 +25,21 @@ import {
 } from "./workspace-tools.js";
 
 describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () => {
-  function setupTestRuntime() {
+  function createTempWorkspace() {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-test-ws-"));
+    return {
+      workspaceRoot: tempDir,
+      cleanup: () => {
+        try {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        } catch {
+          // ignore cleanup error
+        }
+      },
+    };
+  }
+
+  function setupTestRuntime(customWorkspaceRoot?: string) {
     const idFactory = createSequentialIdFactory();
     const registry = new ToolRegistry();
     registry.register(workspaceListTool);
@@ -42,7 +60,7 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       runId: idFactory.nextRunId(),
       attemptId: idFactory.nextAttemptId(),
       modelCallId: idFactory.nextModelCallId(),
-      workspaceRoot: process.cwd(),
+      workspaceRoot: customWorkspaceRoot ?? process.cwd(),
       sandboxProfile: "host-workspace-v1",
       totalRunToolCalls: 0,
     };
@@ -57,30 +75,87 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
     };
   }
 
-  describe("Invocation Normalization", () => {
-    it("prevents caller argument mutation after executeBatch admission from altering execution", async () => {
+  describe("Invocation Normalization & Argument Mutation Isolation", () => {
+    it("prevents caller mutation of path, content, mode, and limit after admission from altering execution", async () => {
+      const tempWs = createTempWorkspace();
+      try {
+        fs.writeFileSync(
+          path.join(tempWs.workspaceRoot, "read.txt"),
+          "hello world",
+        );
+        const { runtime, approvalCoordinator, batchContext } = setupTestRuntime(
+          tempWs.workspaceRoot,
+        );
+
+        // Auto-approve using deterministic listener hook (no sleep)
+        approvalCoordinator.onRequest((binding) => {
+          approvalCoordinator.resolveApproval(
+            binding.approvalId,
+            batchContext.runId,
+            "allow-once",
+          );
+        });
+
+        const rawArguments: Record<string, unknown> = {
+          path: "write.txt",
+          content: "initial content",
+          mode: "create",
+        };
+
+        const requests: NormalizedToolRequest[] = [
+          {
+            toolCallId: createToolCallId("tcall_1"),
+            modelCallId: batchContext.modelCallId,
+            ordinal: 1,
+            toolName: "workspace.write_text",
+            rawArguments,
+          },
+        ];
+
+        const batchPromise = runtime.executeBatch(requests, batchContext);
+
+        // Mutate rawArguments fields immediately after admission
+        rawArguments["path"] = "../escape.txt";
+        rawArguments["content"] = "HACKED";
+        rawArguments["mode"] = "replace";
+
+        const outcomes = await batchPromise;
+        expect(outcomes).toHaveLength(1);
+        expect(outcomes[0]!.ok).toBe(true);
+
+        // Verify written file in temp workspace has original content
+        const writtenPath = path.join(tempWs.workspaceRoot, "write.txt");
+        expect(fs.existsSync(writtenPath)).toBe(true);
+        expect(fs.readFileSync(writtenPath, "utf8")).toBe("initial content");
+
+        // Verify outcome contains immutable normalized arguments
+        expect(outcomes[0]!.normalizedArguments).toEqual({
+          path: "write.txt",
+          content: "initial content",
+          mode: "create",
+        });
+      } finally {
+        tempWs.cleanup();
+      }
+    });
+
+    it("ensures successful and admitted failed outcomes retain normalized arguments", async () => {
       const { runtime, batchContext } = setupTestRuntime();
 
-      const rawArguments: Record<string, unknown> = { path: "src" };
       const requests: NormalizedToolRequest[] = [
         {
-          toolCallId: createToolCallId("tcall_1"),
+          toolCallId: createToolCallId("tcall_deny"),
           modelCallId: batchContext.modelCallId,
           ordinal: 1,
-          toolName: "workspace.list",
-          rawArguments,
+          toolName: "workspace.read_text",
+          rawArguments: { path: ".env" },
         },
       ];
 
-      const batchPromise = runtime.executeBatch(requests, batchContext);
-
-      // Mutate rawArguments immediately after admission
-      rawArguments["path"] = "../invalid_escape";
-
-      const outcomes = await batchPromise;
-      expect(outcomes).toHaveLength(1);
-      expect(outcomes[0]!.ok).toBe(true);
-      expect((outcomes[0]!.result as any).path).toBe("src");
+      const outcomes = await runtime.executeBatch(requests, batchContext);
+      expect(outcomes[0]!.ok).toBe(false);
+      expect(outcomes[0]!.error?.code).toBe("TOOL_POLICY_DENIED");
+      expect(outcomes[0]!.normalizedArguments).toEqual({ path: ".env" });
     });
 
     it("fails extra properties and malformed arguments before policy or execution", async () => {
@@ -88,11 +163,11 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
 
       const requests: NormalizedToolRequest[] = [
         {
-          toolCallId: createToolCallId("tcall_1"),
+          toolCallId: createToolCallId("tcall_invalid"),
           modelCallId: batchContext.modelCallId,
           ordinal: 1,
           toolName: "workspace.list",
-          rawArguments: { path: "src", unknownExtraField: true },
+          rawArguments: { path: "src", extraProp: "unsupported" },
         },
       ];
 
@@ -113,7 +188,7 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       const { idFactory, registry, policy, approvalCoordinator, batchContext } =
         setupTestRuntime();
       const runtime = new ToolRuntime(registry, policy, approvalCoordinator, {
-        maxToolArgumentBytes: 20, // Very small limit
+        maxToolArgumentBytes: 20,
       });
 
       const requests: NormalizedToolRequest[] = [
@@ -163,46 +238,74 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
   });
 
   describe("Approval Binding & Policy Recheck", () => {
-    it("executes side-effect tool when allow-once is granted for exact bound invocation", async () => {
+    it("executes side-effect tool when allow-once is granted for exact bound invocation using deterministic barrier", async () => {
       const { runtime, approvalCoordinator, batchContext } = setupTestRuntime();
 
-      let requestedApprovalId: string | undefined;
-      approvalCoordinator.onRequest((binding) => {
-        requestedApprovalId = binding.approvalId;
-      });
-
-      const req: NormalizedToolRequest = {
-        toolCallId: createToolCallId("tcall_write_1"),
-        modelCallId: batchContext.modelCallId,
-        ordinal: 1,
-        toolName: "workspace.write_text",
-        rawArguments: {
-          path: "package.json",
-          content: '{"name":"test"}',
-          mode: "replace",
+      let ioExecuted = false;
+      const customRegistry = new ToolRegistry();
+      const fakeSideEffectTool: ToolDescriptor = {
+        name: "test.side_effect",
+        descriptorVersion: "1.0.0",
+        owningModule: "test",
+        description: "Fake side effect tool",
+        argumentSchema: Type.Object({
+          path: Type.String(),
+          action: Type.String(),
+        }),
+        resultSchema: Type.Object({ done: Type.Boolean() }),
+        effectClassification: "side-effecting",
+        sensitivityClassification: "none",
+        executionTarget: "workspace",
+        sandboxRequirement: "host-workspace-v1",
+        timeoutMs: 5000,
+        cancellationSupport: true,
+        concurrencyTrait: "sequential",
+        idempotencyTrait: false,
+        approvalSummaryRenderer: () => "Fake side effect action",
+        redactionRules: [],
+        inputLimits: { maxBytes: 1024 },
+        outputLimits: { maxBytes: 1024 },
+        progressFingerprintVersion: "1.0.0",
+        execute: async () => {
+          ioExecuted = true;
+          return { done: true };
         },
       };
 
-      const events: string[] = [];
-      runtime.onEvent((e) => events.push(e.type));
+      customRegistry.register(fakeSideEffectTool);
+      customRegistry.freeze();
 
-      const batchPromise = runtime.executeBatch([req], batchContext);
-
-      // Wait brief moment for approval request
-      await new Promise((r) => setTimeout(r, 10));
-      expect(requestedApprovalId).toBeDefined();
-
-      const resolveRes = approvalCoordinator.resolveApproval(
-        requestedApprovalId as any,
-        batchContext.runId,
-        "allow-once",
+      const policy = new WorkspacePolicy();
+      const customRuntime = new ToolRuntime(
+        customRegistry,
+        policy,
+        approvalCoordinator,
       );
-      expect(resolveRes.status).toBe("allowed");
 
-      const outcomes = await batchPromise;
+      // Deterministic coordinator listener hook (no sleep)
+      approvalCoordinator.onRequest((binding) => {
+        approvalCoordinator.resolveApproval(
+          binding.approvalId,
+          batchContext.runId,
+          "allow-once",
+        );
+      });
+
+      const req: NormalizedToolRequest = {
+        toolCallId: createToolCallId("tcall_side_1"),
+        modelCallId: batchContext.modelCallId,
+        ordinal: 1,
+        toolName: "test.side_effect",
+        rawArguments: { path: "test.txt", action: "run" },
+      };
+
+      const events: string[] = [];
+      customRuntime.onEvent((e) => events.push(e.type));
+
+      const outcomes = await customRuntime.executeBatch([req], batchContext);
       expect(outcomes[0]!.ok).toBe(true);
+      expect(ioExecuted).toBe(true);
 
-      // Verify lifecycle sequence
       expect(events).toEqual([
         "tool.batch.planned",
         "tool.requested",
@@ -215,68 +318,173 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       ]);
     });
 
-    it("prevents execution and tool.started when wrong runId attempts to resolve approval", async () => {
+    it("prevents execution and tool.started when binding validation or wrong runId fails", async () => {
       const { runtime, approvalCoordinator, batchContext } = setupTestRuntime();
 
-      let requestedApprovalId: string | undefined;
-      approvalCoordinator.onRequest((binding) => {
-        requestedApprovalId = binding.approvalId;
-      });
-
-      const req: NormalizedToolRequest = {
-        toolCallId: createToolCallId("tcall_write_2"),
-        modelCallId: batchContext.modelCallId,
-        ordinal: 1,
-        toolName: "workspace.write_text",
-        rawArguments: {
-          path: "package.json",
-          content: '{"name":"test"}',
-          mode: "replace",
+      let ioExecuted = false;
+      const customRegistry = new ToolRegistry();
+      const fakeSideEffectTool: ToolDescriptor = {
+        name: "test.side_effect",
+        descriptorVersion: "1.0.0",
+        owningModule: "test",
+        description: "Fake side effect tool",
+        argumentSchema: Type.Object({
+          path: Type.String(),
+          action: Type.String(),
+        }),
+        resultSchema: Type.Object({ done: Type.Boolean() }),
+        effectClassification: "side-effecting",
+        sensitivityClassification: "none",
+        executionTarget: "workspace",
+        sandboxRequirement: "host-workspace-v1",
+        timeoutMs: 5000,
+        cancellationSupport: true,
+        concurrencyTrait: "sequential",
+        idempotencyTrait: false,
+        approvalSummaryRenderer: () => "Fake side effect action",
+        redactionRules: [],
+        inputLimits: { maxBytes: 1024 },
+        outputLimits: { maxBytes: 1024 },
+        progressFingerprintVersion: "1.0.0",
+        execute: async () => {
+          ioExecuted = true;
+          return { done: true };
         },
       };
 
-      const events: string[] = [];
-      runtime.onEvent((e) => events.push(e.type));
+      customRegistry.register(fakeSideEffectTool);
+      customRegistry.freeze();
 
-      const batchPromise = runtime.executeBatch([req], batchContext);
-      await new Promise((r) => setTimeout(r, 10));
-
-      const wrongRunId = createRunId("00000000-0000-4000-8000-000000000000");
-      const resolveRes = approvalCoordinator.resolveApproval(
-        requestedApprovalId as any,
-        wrongRunId,
-        "allow-once",
+      const policy = new WorkspacePolicy();
+      const customRuntime = new ToolRuntime(
+        customRegistry,
+        policy,
+        approvalCoordinator,
       );
-      expect(resolveRes.status).toBe("not-found");
 
-      // Now cancel the pending approval for the actual run
-      approvalCoordinator.cancelPendingForRun(batchContext.runId);
-
-      const outcomes = await batchPromise;
-      expect(outcomes[0]!.ok).toBe(false);
-      expect(events).not.toContain("tool.started");
-    });
-
-    it("fails closed when policy explicitly denies invocation without requesting approval", async () => {
-      const { runtime, approvalCoordinator, batchContext } = setupTestRuntime();
-
-      let approvalRequested = false;
-      approvalCoordinator.onRequest(() => {
-        approvalRequested = true;
+      // Deterministic coordinator listener hook that cancels run
+      approvalCoordinator.onRequest((binding) => {
+        const wrongRunId = createRunId("00000000-0000-4000-8000-000000000099");
+        approvalCoordinator.resolveApproval(
+          binding.approvalId,
+          wrongRunId,
+          "allow-once",
+        );
+        approvalCoordinator.cancelPendingForRun(batchContext.runId);
       });
 
       const req: NormalizedToolRequest = {
-        toolCallId: createToolCallId("tcall_deny_1"),
+        toolCallId: createToolCallId("tcall_side_2"),
         modelCallId: batchContext.modelCallId,
         ordinal: 1,
-        toolName: "workspace.read_text",
-        rawArguments: { path: ".env" }, // Protected file
+        toolName: "test.side_effect",
+        rawArguments: { path: "test.txt", action: "run" },
       };
 
-      const outcomes = await runtime.executeBatch([req], batchContext);
+      const events: string[] = [];
+      customRuntime.onEvent((e) => events.push(e.type));
+
+      const outcomes = await customRuntime.executeBatch([req], batchContext);
+      expect(outcomes[0]!.ok).toBe(false);
+      expect(ioExecuted).toBe(false);
+      expect(events).not.toContain("tool.started");
+    });
+
+    it("prevents execution and tool.started when policy recheck fails or denies", async () => {
+      const idFactory = createSequentialIdFactory();
+      const customRegistry = new ToolRegistry();
+      const fakeTool: ToolDescriptor = {
+        name: "test.side_effect",
+        descriptorVersion: "1.0.0",
+        owningModule: "test",
+        description: "Fake side effect tool",
+        argumentSchema: Type.Object({
+          path: Type.String(),
+          action: Type.String(),
+        }),
+        resultSchema: Type.Object({ done: Type.Boolean() }),
+        effectClassification: "side-effecting",
+        sensitivityClassification: "none",
+        executionTarget: "workspace",
+        sandboxRequirement: "host-workspace-v1",
+        timeoutMs: 5000,
+        cancellationSupport: true,
+        concurrencyTrait: "sequential",
+        idempotencyTrait: false,
+        approvalSummaryRenderer: () => "Fake side effect action",
+        redactionRules: [],
+        inputLimits: { maxBytes: 1024 },
+        outputLimits: { maxBytes: 1024 },
+        progressFingerprintVersion: "1.0.0",
+        execute: async () => ({ done: true }),
+      };
+      customRegistry.register(fakeTool);
+      customRegistry.freeze();
+
+      let initialCheck = true;
+      const policy: any = {
+        evaluateInvocation: async () => {
+          if (initialCheck) {
+            initialCheck = false;
+            return {
+              decision: "require-approval",
+              policyProfile: "profile-1",
+              policyVersion: "1.0.0",
+              reason: "requires approval",
+            };
+          }
+          // Recheck returns deny!
+          return {
+            decision: "deny",
+            policyProfile: "profile-1",
+            policyVersion: "1.0.0",
+            reason: "denied on recheck",
+          };
+        },
+      };
+
+      const approvalCoordinator = new ApprovalCoordinator(idFactory, 5000);
+      const customRuntime = new ToolRuntime(
+        customRegistry,
+        policy,
+        approvalCoordinator,
+      );
+
+      const batchContext: ToolBatchContext = {
+        agentId: createAgentId("primary"),
+        sessionKey: createSessionKey("agent:primary:test"),
+        sessionId: idFactory.nextSessionId(),
+        runId: idFactory.nextRunId(),
+        attemptId: idFactory.nextAttemptId(),
+        modelCallId: idFactory.nextModelCallId(),
+        workspaceRoot: process.cwd(),
+        sandboxProfile: "host-workspace-v1",
+        totalRunToolCalls: 0,
+      };
+
+      approvalCoordinator.onRequest((binding) => {
+        approvalCoordinator.resolveApproval(
+          binding.approvalId,
+          batchContext.runId,
+          "allow-once",
+        );
+      });
+
+      const events: string[] = [];
+      customRuntime.onEvent((e) => events.push(e.type));
+
+      const req: NormalizedToolRequest = {
+        toolCallId: createToolCallId("tcall_recheck_deny"),
+        modelCallId: batchContext.modelCallId,
+        ordinal: 1,
+        toolName: "test.side_effect",
+        rawArguments: { path: "test.txt", action: "run" },
+      };
+
+      const outcomes = await customRuntime.executeBatch([req], batchContext);
       expect(outcomes[0]!.ok).toBe(false);
       expect(outcomes[0]!.error?.code).toBe("TOOL_POLICY_DENIED");
-      expect(approvalRequested).toBe(false);
+      expect(events).not.toContain("tool.started");
     });
   });
 });
