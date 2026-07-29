@@ -9,7 +9,7 @@
 **Dependency baseline:** M0–M2 PASS; `docs/plans/active/0001-core-runtime-vertical-slice.md` CLOSED
 **Implementation baseline:** `master` at `7263b0c0629d27ba42ad396bb3703d050a3fdf19`
 **Baseline provenance:** remote `master` was inspected at this commit; implementation verified against working tree
-**Current reviewed checkpoint:** `5fcdc73cfd37cba1ca6fc8f020b591c37e6f1f85`
+**Current reviewed checkpoint:** `c6018c4b3846869769b3d74da5c27fcec621379a`
 **M3 deterministic:** PASS at the recorded current test checkpoint
 **M3 controlled side effect:** FAIL — independent closure audit; remediation in progress
 **M3 Gemini live:** NOT RUN — optional/nonblocking under the current plan
@@ -773,7 +773,7 @@ Current accepted independent closure-audit findings:
 | -------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `M3-F01` | `DECISION VIOLATION`       | batch is not completely planned before implementation I/O; policy/approval occur during execution; concurrency is unbounded or configured capacity is unused; not every request receives a terminal outcome |
 | `M3-F02` | `DECISION VIOLATION`       | workspace containment, symlink handling, atomic create/replace, normalization-to-execution binding, or TOCTOU safety is insufficient                                                                        |
-| `M3-F03` | `DECISION VIOLATION`       | registry publication, normalized invocation identity, host tool-call identity, or exact approval binding is insufficient                                                                                    |
+| `M3-F03` | `CLOSED — PASS (R1 scope)` | registry publication, normalized invocation identity, host tool-call identity, or exact approval binding is insufficient                                                                                    |
 | `M3-F04` | `DECISION VIOLATION`       | timeout/cancellation races only the returned promise or does not control underlying I/O; post-start certainty is incorrect                                                                                  |
 | `M3-F05` | `DECISION VIOLATION`       | durable tool lifecycle journal or Gemini tool-cycle continuation evidence is incomplete                                                                                                                     |
 | `M3-F06` | `DECISION VIOLATION`       | shutdown does not cancel and drain active runtime/tool work before storage close                                                                                                                            |
@@ -806,16 +806,37 @@ control-plane decision.
 ### M3-R1C — Final closure remediation checkpoint
 
 **Outcome:** Close the remaining accepted subfindings of M3-F03 only.
-**Execution baseline:** the exact reviewed process checkpoint supplied by the
-M3-R1C CLI task contract.
+**Status:** CLOSED — PASS
+**Implementation locators:**
 
-| Gate ID                                                        | Authority                                      | Production path / concrete risk                                                                                                   | Required behavior                                                                                                                              | Exact required proof                                                                                                                                                | Classification            | Status           |
-| -------------------------------------------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ---------------- |
-| M3-R1C-G1 — Policy result fails closed                         | Active plan §4.4; ADR 0008                     | Policy-to-executor boundary could allow malformed, missing, unsupported, or initial `allow` policy results to start side effects. | Fail closed before `tool.started`; side effects proceed only through exact `require-approval`, with rechecked constraints passed to execution. | Focused fake-policy tests for malformed, missing, and initial side-effect `allow`; execution-context assertion; no implementation I/O on failure.                   | blocking                  | FROZEN — NOT RUN |
-| M3-R1C-G2 — Runtime execution authority is snapshotted         | Active plan §§4.5–4.6; ADR 0008                | Caller mutation after admission could alter workspace, target, sandbox, limits, or policy evidence used by approval/execution.    | Capture one host-owned immutable invocation authority snapshot before approval/execution.                                                      | Deterministic barrier test mutating caller-owned batch context after admission; executor observes only the original snapshot.                                       | blocking                  | FROZEN — NOT RUN |
-| M3-R1C-G3 — Registry execution authority remains immutable     | Active plan §§4.1–4.2; ADR 0012                | Public metadata or leaked registration objects could replace the registered implementation or renderer after freeze.              | Expose metadata only; retain registry-owned immutable execution authority after freeze.                                                        | Mutation/replacement attempt after freeze leaves authority unchanged; Tool Runtime invokes the registered implementation through a narrow registry-owned operation. | blocking                  | FROZEN — NOT RUN |
-| M3-R1C-G4 — Transcript does not fabricate normalized arguments | Active plan §4.10; ADR 0007                    | Unknown or invalid unadmitted calls could create a normal transcript tool call using invented `{}` arguments.                     | Persist normalized arguments only for admitted calls; preserve atomic, structural transcript validity without raw fallback.                    | Unknown/invalid transcript tests; admitted-normalized transcript test; invariant-failure no-partial-commit test.                                                    | blocking                  | FROZEN — NOT RUN |
-| M3-R1C-G5 — Focused checkpoint evidence                        | Workflow verification contract; active plan §9 | Missing focused proof could leave G1–G4 unverified.                                                                               | Produce the frozen evidence set for G1–G4 without expanding the checkpoint.                                                                    | G1–G4 focused proof; typecheck; changed-file format check; lint; focused tool/policy/agent tests; full suite; `git diff --check`.                                   | blocking closure evidence | FROZEN — NOT RUN |
+```text
+M3-R1C:
+b41728112bb2b6184089e7f51cc560f2185e9f78
+
+M3-R1D:
+c6018c4b3846869769b3d74da5c27fcec621379a
+```
+
+**Accepted closure verdict:** PASS — eligible for synchronization
+Accepted by user on 2026-07-29
+
+| Gate ID                                                        | Authority                                      | Production path / concrete risk                                                                                                   | Required behavior                                                                                                                              | Exact required proof                                                                                                                                                | Classification            | Status | Evidence locator                                     |
+| -------------------------------------------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ------ | ---------------------------------------------------- |
+| M3-R1C-G1 — Policy result fails closed                         | Active plan §4.4; ADR 0008                     | Policy-to-executor boundary could allow malformed, missing, unsupported, or initial `allow` policy results to start side effects. | Fail closed before `tool.started`; side effects proceed only through exact `require-approval`, with rechecked constraints passed to execution. | Focused fake-policy tests for malformed, missing, and initial side-effect `allow`; execution-context assertion; no implementation I/O on failure.                   | blocking                  | PASS   | `b41728112bb2b6184089e7f51cc560f2185e9f78`           |
+| M3-R1C-G2 — Runtime execution authority is snapshotted         | Active plan §§4.5–4.6; ADR 0008                | Caller mutation after admission could alter workspace, target, sandbox, limits, or policy evidence used by approval/execution.    | Capture one host-owned immutable invocation authority snapshot before approval/execution.                                                      | Deterministic barrier test mutating caller-owned batch context after admission; executor observes only the original snapshot.                                       | blocking                  | PASS   | `b41728112bb2b6184089e7f51cc560f2185e9f78`           |
+| M3-R1C-G3 — Registry execution authority remains immutable     | Active plan §§4.1–4.2; ADR 0012                | Public metadata or leaked registration objects could replace the registered implementation or renderer after freeze.              | Expose metadata only; retain registry-owned immutable execution authority after freeze.                                                        | Mutation/replacement attempt after freeze leaves authority unchanged; Tool Runtime invokes the registered implementation through a narrow registry-owned operation. | blocking                  | PASS   | `c6018c4b3846869769b3d74da5c27fcec621379a`           |
+| M3-R1C-G4 — Transcript does not fabricate normalized arguments | Active plan §4.10; ADR 0007                    | Unknown or invalid unadmitted calls could create a normal transcript tool call using invented `{}` arguments.                     | Persist normalized arguments only for admitted calls; preserve atomic, structural transcript validity without raw fallback.                    | Unknown/invalid transcript tests; admitted-normalized transcript test; invariant-failure no-partial-commit test.                                                    | blocking                  | PASS   | `c6018c4b3846869769b3d74da5c27fcec621379a`           |
+| M3-R1C-G5 — Focused checkpoint evidence                        | Workflow verification contract; active plan §9 | Missing focused proof could leave G1–G4 unverified.                                                                               | Produce the frozen evidence set for G1–G4 without expanding the checkpoint.                                                                    | G1–G4 focused proof; typecheck; changed-file format check; lint; focused tool/policy/agent tests; full suite; `git diff --check`.                                   | blocking closure evidence | PASS   | validation recorded by the M3-R1C and M3-R1D reports |
+
+M3-F03 closure for the accepted R1 scope:
+
+```text
+Closure:
+M3-R1C + M3-R1D
+
+Result:
+PASS at c6018c4b3846869769b3d74da5c27fcec621379a
+```
 
 One parameterized approval-drift matrix may prove equivalent binding fields; a
 separate test for every equivalent field is not required.
@@ -835,6 +856,8 @@ reachability or an authority violation:
 ### M3-R2 — Batch admission and bounded parallelism
 
 **Mapped findings:** M3-F01 only.
+**Next execution checkpoint:** M3-R2 — Batch admission and bounded parallelism
+**Status:** PLANNED — NOT RUN
 
 | Gate ID | Authority                                      | Production path / concrete risk                                                                                  | Required behavior                                                         | Exact required proof                                                                                           | Classification | Status            |
 | ------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------- | ----------------- |
@@ -1141,7 +1164,8 @@ Migration:
   NONE — existing schema is sufficient and tests prove the required invariants
 
 Independent audit:
-  PENDING — ready for independent read-only M3 closure audit
+  M3-R1 closure checkpoint: PASS — eligible for synchronization
+  Accepted by user on 2026-07-29
 ```
 
 ## 15. Completion Standard
