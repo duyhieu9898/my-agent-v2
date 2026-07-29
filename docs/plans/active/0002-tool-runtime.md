@@ -9,7 +9,7 @@
 **Dependency baseline:** M0–M2 PASS; `docs/plans/active/0001-core-runtime-vertical-slice.md` CLOSED
 **Implementation baseline:** `master` at `7263b0c0629d27ba42ad396bb3703d050a3fdf19`
 **Baseline provenance:** remote `master` was inspected at this commit; implementation verified against working tree
-**Current reviewed checkpoint:** `9c9792c3ebe8153c20427a4992c0c32d10d75796`
+**Current reviewed checkpoint:** `9861678e7daa1b61e1736afa80fb7276a321e2ad`
 **M3 deterministic:** PASS at the recorded current test checkpoint
 **M3 controlled side effect:** FAIL — independent closure audit; remediation in progress
 **M3 Gemini live:** NOT RUN — optional/nonblocking under the current plan
@@ -856,7 +856,7 @@ reachability or an authority violation:
 ### M3-R2 — Batch admission and bounded parallelism
 
 **Mapped findings:** M3-F01 only.
-**Next execution checkpoint:** M3-R3 — Workspace containment and I/O safety
+**Next execution checkpoint:** M3-R3B — Atomic create/replace and TOCTOU safety (M3-R3-2)
 **Status:** CLOSED — PASS
 **Implementation locators:**
 
@@ -896,18 +896,45 @@ PASS at 9c9792c3ebe8153c20427a4992c0c32d10d75796
 ### M3-R3 — Workspace containment and I/O safety
 
 **Mapped findings:** M3-F02, M3-F04, and M3-F06 only.
-**Status:** PLANNED — NOT RUN
+**Status:** IN PROGRESS
 **Matrix authority:** active plan §§4.6 and 4.11; ADR 0006; ADR 0008;
 relevant Architecture lifecycle/security invariants.
 
 | Gate ID | Authority                                                                             | Production path / concrete risk                                                              | Required behavior                                                   | Exact required proof                                                                                           | Classification | Status            |
 | ------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------- | ----------------- |
-| M3-R3-1 | M3-F02; active plan §4.6; ADR 0008; Architecture lifecycle/security invariants        | Paths or symlinks could escape the explicit workspace.                                       | Enforce workspace containment and symlink safety.                   | Temporary filesystem containment, traversal, and symlink-escape tests with no escaped access.                  | blocking       | PLANNED — NOT RUN |
+| M3-R3-1 | M3-F02; active plan §4.6; ADR 0008; Architecture lifecycle/security invariants        | Paths or symlinks could escape the explicit workspace.                                       | Enforce workspace containment and symlink safety.                   | Temporary filesystem containment, traversal, and symlink-escape tests with no escaped access.                  | blocking       | PASS              |
 | M3-R3-2 | M3-F02; active plan §4.6; ADR 0008; Architecture lifecycle/security invariants        | Create/replace could race path changes or expose partial writes.                             | Use atomic create/replace with TOCTOU-safe handling.                | Temporary filesystem atomic-create/replace and raced-path evidence; no partial or redirected write.            | blocking       | PLANNED — NOT RUN |
 | M3-R3-3 | M3-F04; active plan §§4.6, 4.11; ADR 0006; ADR 0008                                   | Timeout or cancellation could race only the returned promise while underlying I/O continues. | Propagate abort to underlying I/O and produce one terminal outcome. | Abort-aware fake I/O proves underlying operation observes cancellation and cannot later complete successfully. | blocking       | PLANNED — NOT RUN |
 | M3-R3-4 | M3-F04; active plan §4.11; ADR 0006; ADR 0008                                         | Post-start side effects could be reported as safely rolled back.                             | Classify post-start ambiguous effects as uncertain.                 | Fault-injected side-effect fake proves uncertain terminal evidence and no replay.                              | blocking       | PLANNED — NOT RUN |
 | M3-R3-5 | M3-F06; active plan §§4.6, 4.11; ADR 0006; Architecture lifecycle/security invariants | SQLite could close while runtime/tool work remains active.                                   | Cancel and drain active work before storage close.                  | Ordered shutdown fake records cancellation, drain, cleanup, then storage close; asserts close is last.         | blocking       | PLANNED — NOT RUN |
 | M3-R3-6 | M3-F02, M3-F04, M3-F06; active plan §4.11; ADR 0006; ADR 0008                         | Success, failure, timeout, or cancellation could leak temporary resources or handles.        | Clean up in every terminal path.                                    | Terminal-path matrix asserts cleanup for success, failure, cancellation, timeout, and uncertain outcomes.      | blocking       | PLANNED — NOT RUN |
+
+M3-R3A closure for M3-R3-1:
+
+```text
+Closure:
+M3-R3A + M3-R3AE
+
+Implementation:
+96177e573c7f8ec09ca8a2af9384aabe4a9c4dc6
+
+Closure evidence:
+9861678e7daa1b61e1736afa80fb7276a321e2ad
+
+Result:
+PASS
+
+Accepted by user:
+2026-07-29
+
+Scope:
+stable-filesystem workspace containment and symlink safety only
+```
+
+M3-F02 remains open because M3-R3-2 atomic create/replace and TOCTOU-safe
+handling are not yet closed.
+
+**Next execution checkpoint:** M3-R3B — Atomic create/replace and TOCTOU safety (M3-R3-2)
 
 ### M3-R4 — Lifecycle journal, Gemini continuation, and controlled verification
 
