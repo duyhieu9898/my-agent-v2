@@ -34,7 +34,7 @@ Implementation follows these rules:
 2. `AGENTS.md`, `docs/WORKFLOW.md`, `docs/ARCHITECTURE.md`, and accepted ADRs are implementation authority.
 3. Architecture documents define boundaries and invariants. The active plan defines task-local sequencing and file-level implementation choices.
 4. Work proceeds as vertical slices with executable evidence, not as disconnected framework construction.
-5. Only one plan remains active for Milestones 0–2. It moves to `docs/plans/completed/` only after all exit criteria pass.
+5. Keep one active execution plan for the current coordinated workstream. Move it to `docs/plans/completed/` only after its accepted exit criteria pass.
 6. Existing behavior must be preserved unless an accepted ADR explicitly replaces it.
 7. No document may claim a subsystem is implemented until code and relevant tests exist.
 8. New architecture decisions require a new ADR. Local naming, file organization, or test-fixture choices remain in the active plan.

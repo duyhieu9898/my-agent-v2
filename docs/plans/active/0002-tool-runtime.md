@@ -9,7 +9,7 @@
 **Dependency baseline:** M0–M2 PASS; `docs/plans/active/0001-core-runtime-vertical-slice.md` CLOSED
 **Implementation baseline:** `master` at `7263b0c0629d27ba42ad396bb3703d050a3fdf19`
 **Baseline provenance:** remote `master` was inspected at this commit; implementation verified against working tree
-**Current reviewed checkpoint:** `32ebfbf0cc4155442f2cf1c4bfba2b11ac987e13`
+**Current reviewed checkpoint:** `5fcdc73cfd37cba1ca6fc8f020b591c37e6f1f85`
 **M3 deterministic:** PASS at the recorded current test checkpoint
 **M3 controlled side effect:** FAIL — independent closure audit; remediation in progress
 **M3 Gemini live:** NOT RUN — optional/nonblocking under the current plan
@@ -749,20 +749,35 @@ All gates are `OPEN — IMPLEMENTATION REQUIRED` at planning completion.
 
 ## 7. Exact Open Findings And P2
 
-| ID       | Classification                         | Baseline evidence                                               | Closure                                          |
-| -------- | -------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------ |
-| M3-F01   | DECISION IMPLEMENTATION GAP — blocking | tool profiles/fingerprints are `none`; no tools/policy boundary | G01–G06                                          |
-| M3-F02   | DECISION IMPLEMENTATION GAP — blocking | model/Harness/context carry text only                           | G14–G15                                          |
-| M3-F03   | DECISION IMPLEMENTATION GAP — blocking | runtime has no active ToolStage or loop                         | G16–G17                                          |
-| M3-F04   | DECISION IMPLEMENTATION GAP — blocking | Checkpoint `continue` is declarative only                       | G17                                              |
-| M3-F05   | DECISION IMPLEMENTATION GAP — blocking | transcript lacks explicit tool-call pairing                     | G18                                              |
-| M3-F06   | DECISION IMPLEMENTATION GAP — blocking | no registry, policy, approval, executor, or tool capacity       | G01–G13                                          |
-| M3-F07   | DECISION IMPLEMENTATION GAP — blocking | no approval Gateway method                                      | G09                                              |
-| M3-F08   | MISSING CLOSURE EVIDENCE — blocking    | incomplete tool correlation/evidence                            | G20–G21                                          |
-| M3-F09   | MISSING CLOSURE EVIDENCE — blocking    | no controlled side-effect verifier                              | G28                                              |
-| M3-P2-01 | QUALITY IMPROVEMENT / P2               | import-boundary test is regex-based                             | keep non-blocking; add focused M3 assertions     |
-| M3-P2-02 | QUALITY IMPROVEMENT / P2               | usage reconciliation audit trail                                | unrelated absent regression                      |
-| M3-P2-03 | QUALITY IMPROVEMENT / P2               | mid-batch reconciliation failure coverage                       | keep non-blocking; prove per-model-call M3 usage |
+The following are historical planning-completion implementation gaps. They are
+not the current independent closure-audit findings.
+
+| ID             | Classification                         | Baseline evidence                                               | Closure                                          |
+| -------------- | -------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------ |
+| M3-PLAN-GAP-01 | DECISION IMPLEMENTATION GAP — blocking | tool profiles/fingerprints are `none`; no tools/policy boundary | G01–G06                                          |
+| M3-PLAN-GAP-02 | DECISION IMPLEMENTATION GAP — blocking | model/Harness/context carry text only                           | G14–G15                                          |
+| M3-PLAN-GAP-03 | DECISION IMPLEMENTATION GAP — blocking | runtime has no active ToolStage or loop                         | G16–G17                                          |
+| M3-PLAN-GAP-04 | DECISION IMPLEMENTATION GAP — blocking | Checkpoint `continue` is declarative only                       | G17                                              |
+| M3-PLAN-GAP-05 | DECISION IMPLEMENTATION GAP — blocking | transcript lacks explicit tool-call pairing                     | G18                                              |
+| M3-PLAN-GAP-06 | DECISION IMPLEMENTATION GAP — blocking | no registry, policy, approval, executor, or tool capacity       | G01–G13                                          |
+| M3-PLAN-GAP-07 | DECISION IMPLEMENTATION GAP — blocking | no approval Gateway method                                      | G09                                              |
+| M3-PLAN-GAP-08 | MISSING CLOSURE EVIDENCE — blocking    | incomplete tool correlation/evidence                            | G20–G21                                          |
+| M3-PLAN-GAP-09 | MISSING CLOSURE EVIDENCE — blocking    | no controlled side-effect verifier                              | G28                                              |
+| M3-P2-01       | QUALITY IMPROVEMENT / P2               | import-boundary test is regex-based                             | keep non-blocking; add focused M3 assertions     |
+| M3-P2-02       | QUALITY IMPROVEMENT / P2               | usage reconciliation audit trail                                | unrelated absent regression                      |
+| M3-P2-03       | QUALITY IMPROVEMENT / P2               | mid-batch reconciliation failure coverage                       | keep non-blocking; prove per-model-call M3 usage |
+
+Current accepted independent closure-audit findings:
+
+| Finding  | Classification             | Locked meaning                                                                                                                                                                                              |
+| -------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `M3-F01` | `DECISION VIOLATION`       | batch is not completely planned before implementation I/O; policy/approval occur during execution; concurrency is unbounded or configured capacity is unused; not every request receives a terminal outcome |
+| `M3-F02` | `DECISION VIOLATION`       | workspace containment, symlink handling, atomic create/replace, normalization-to-execution binding, or TOCTOU safety is insufficient                                                                        |
+| `M3-F03` | `DECISION VIOLATION`       | registry publication, normalized invocation identity, host tool-call identity, or exact approval binding is insufficient                                                                                    |
+| `M3-F04` | `DECISION VIOLATION`       | timeout/cancellation races only the returned promise or does not control underlying I/O; post-start certainty is incorrect                                                                                  |
+| `M3-F05` | `DECISION VIOLATION`       | durable tool lifecycle journal or Gemini tool-cycle continuation evidence is incomplete                                                                                                                     |
+| `M3-F06` | `DECISION VIOLATION`       | shutdown does not cancel and drain active runtime/tool work before storage close                                                                                                                            |
+| `M3-F07` | `MISSING CLOSURE EVIDENCE` | controlled verifier does not prove the required denial, expiry, cancellation, uncertainty, replay, transcript, journal, checkpoint, finalization, usage, and cleanup matrix                                 |
 
 Additional P2:
 
@@ -790,102 +805,22 @@ control-plane decision.
 
 ### M3-R1C — Final closure remediation checkpoint
 
-**Outcome:** Close remaining independently audited M3 gaps.
-**Baseline:** `32ebfbf0cc4155442f2cf1c4bfba2b11ac987e13`
+**Outcome:** Close the remaining accepted subfindings of M3-F03 only.
+**Execution baseline:** the exact reviewed process checkpoint supplied by the
+M3-R1C CLI task contract.
 
-#### M3-R1C-G1 — Policy result fails closed
+| Gate ID                                                        | Authority                                      | Production path / concrete risk                                                                                                   | Required behavior                                                                                                                              | Exact required proof                                                                                                                                                | Classification            | Status           |
+| -------------------------------------------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ---------------- |
+| M3-R1C-G1 — Policy result fails closed                         | Active plan §4.4; ADR 0008                     | Policy-to-executor boundary could allow malformed, missing, unsupported, or initial `allow` policy results to start side effects. | Fail closed before `tool.started`; side effects proceed only through exact `require-approval`, with rechecked constraints passed to execution. | Focused fake-policy tests for malformed, missing, and initial side-effect `allow`; execution-context assertion; no implementation I/O on failure.                   | blocking                  | FROZEN — NOT RUN |
+| M3-R1C-G2 — Runtime execution authority is snapshotted         | Active plan §§4.5–4.6; ADR 0008                | Caller mutation after admission could alter workspace, target, sandbox, limits, or policy evidence used by approval/execution.    | Capture one host-owned immutable invocation authority snapshot before approval/execution.                                                      | Deterministic barrier test mutating caller-owned batch context after admission; executor observes only the original snapshot.                                       | blocking                  | FROZEN — NOT RUN |
+| M3-R1C-G3 — Registry execution authority remains immutable     | Active plan §§4.1–4.2; ADR 0012                | Public metadata or leaked registration objects could replace the registered implementation or renderer after freeze.              | Expose metadata only; retain registry-owned immutable execution authority after freeze.                                                        | Mutation/replacement attempt after freeze leaves authority unchanged; Tool Runtime invokes the registered implementation through a narrow registry-owned operation. | blocking                  | FROZEN — NOT RUN |
+| M3-R1C-G4 — Transcript does not fabricate normalized arguments | Active plan §4.10; ADR 0007                    | Unknown or invalid unadmitted calls could create a normal transcript tool call using invented `{}` arguments.                     | Persist normalized arguments only for admitted calls; preserve atomic, structural transcript validity without raw fallback.                    | Unknown/invalid transcript tests; admitted-normalized transcript test; invariant-failure no-partial-commit test.                                                    | blocking                  | FROZEN — NOT RUN |
+| M3-R1C-G5 — Focused checkpoint evidence                        | Workflow verification contract; active plan §9 | Missing focused proof could leave G1–G4 unverified.                                                                               | Produce the frozen evidence set for G1–G4 without expanding the checkpoint.                                                                    | G1–G4 focused proof; typecheck; changed-file format check; lint; focused tool/policy/agent tests; full suite; `git diff --check`.                                   | blocking closure evidence | FROZEN — NOT RUN |
 
-**Authority:** Active plan §4.4; ADR 0008
+One parameterized approval-drift matrix may prove equivalent binding fields; a
+separate test for every equivalent field is not required.
 
-**Required behavior:**
-
-- malformed, missing, or unsupported policy decisions fail closed;
-- a side-effecting tool cannot execute from an initial `allow` or malformed
-  result;
-- a side-effecting invocation executes only after exact `require-approval`;
-- approved/rechecked policy constraints are supplied to the execution context;
-- failure occurs before `tool.started`.
-
-**Required proof:**
-
-- focused fake-policy tests for malformed result, missing decision, and initial
-  side-effect `allow`;
-- execution-context assertion proving rechecked constraints reach the executor;
-- no implementation I/O on failure.
-
-#### M3-R1C-G2 — Runtime execution authority is snapshotted
-
-**Authority:** Active plan §§4.5–4.6; ADR 0008
-
-**Required behavior:**
-
-- workspace identity;
-- execution target;
-- runtime sandbox profile;
-- descriptor sandbox requirement;
-- applicable limits and policy evidence
-
-are captured in one host-owned immutable batch/invocation authority snapshot
-before approval/execution.
-
-Caller mutation after admission cannot change approval validation or execution
-context.
-
-**Required proof:**
-
-- deterministic barrier test mutating caller-owned batch context after admission;
-- executor observes only the original snapshot.
-
-#### M3-R1C-G3 — Registry execution authority remains immutable
-
-**Authority:** Active plan §§4.1–4.2; ADR 0012
-
-**Required behavior:**
-
-- public descriptor APIs expose metadata only;
-- internal implementation/renderer authority cannot be replaced after registry
-  freeze;
-- callers cannot obtain a mutable internal registration object.
-
-**Required proof:**
-
-- mutation/replacement attempt after freeze does not alter execution authority;
-- Tool Runtime still invokes the registered implementation through a narrow
-  registry-owned operation.
-
-#### M3-R1C-G4 — Transcript does not fabricate normalized arguments
-
-**Authority:** Active plan §4.10; ADR 0007
-
-**Required behavior:**
-
-- admitted calls use normalized arguments only;
-- unknown/invalid unadmitted requests do not create a normal tool-call entry
-  with invented `{}` arguments;
-- transcript remains atomic and structurally valid;
-- no raw fallback is reintroduced.
-
-**Required proof:**
-
-- unknown and invalid request transcript tests;
-- admitted normalized transcript test;
-- invariant-failure no-partial-commit test.
-
-#### M3-R1C-G5 — Focused checkpoint evidence
-
-**Required proof** is limited to G1–G4 plus:
-
-- typecheck;
-- format check for changed files;
-- lint;
-- focused tool/policy/agent tests;
-- full test suite;
-- `git diff --check`.
-
-Do not require a separate test for every policy field when one parameterized
-drift matrix proves the same binding invariant.
-
-### M3-R1 P2
+### M3-R1 P2 — QUALITY IMPROVEMENT / P2
 
 The following are nonblocking unless future evidence establishes production
 reachability or an authority violation:
@@ -899,55 +834,51 @@ reachability or an authority violation:
 
 ### M3-R2 — Batch admission and bounded parallelism
 
-**Status:** PLANNED — not implemented
+**Mapped findings:** M3-F01 only.
 
-**Mapped findings:** M3-F01 (tool profiles/fingerprints), existing M3 gates
-G07, G11, G12, G13.
-
-| Gate    | Required behavior                                                                             |
-| ------- | --------------------------------------------------------------------------------------------- |
-| M3-R2-1 | complete batch admission plan before implementation I/O                                       |
-| M3-R2-2 | all descriptor resolution, validation, normalization, policy and approval before parallel I/O |
-| M3-R2-3 | bounded parallelism honoring `maxConcurrentToolCalls`                                         |
-| M3-R2-4 | only all-read + parallel-safe batches run parallel                                            |
-| M3-R2-5 | mixed, invalid, unknown, approval-gated or side-effecting batches are sequential              |
-| M3-R2-6 | deterministic scheduling and original-order outcomes                                          |
-| M3-R2-7 | one terminal outcome for every requested call                                                 |
-| M3-R2-8 | later unapproved calls never start after failure                                              |
-| M3-R2-9 | event-driven concurrency barriers, no sleep-based proof                                       |
+| Gate ID | Authority                                      | Production path / concrete risk                                                                                  | Required behavior                                                         | Exact required proof                                                                                           | Classification | Status            |
+| ------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------- | ----------------- |
+| M3-R2-1 | M3-F01; active plan §4.7; ADR 0008; M3-G11–G13 | Implementation I/O could begin while the batch is only partly admitted.                                          | Complete the batch admission plan before implementation I/O.              | Deterministic fake tools record that no implementation starts before the complete admission plan is available. | blocking       | PLANNED — NOT RUN |
+| M3-R2-2 | M3-F01; active plan §4.7; ADR 0008; M3-G11–G13 | Parallel I/O could begin before descriptor resolution, validation, normalization, policy, or approval completes. | Complete all admission checks before parallel I/O.                        | Deterministic fake tools and barriers prove every admission phase completes before any parallel start.         | blocking       | PLANNED — NOT RUN |
+| M3-R2-3 | M3-F01; active plan §4.7; ADR 0008; M3-G11     | Unbounded work could ignore `maxConcurrentToolCalls`.                                                            | Bound parallel starts by `maxConcurrentToolCalls`.                        | Barrier-controlled fake tools assert the observed peak concurrency equals the configured bound.                | blocking       | PLANNED — NOT RUN |
+| M3-R2-4 | M3-F01; active plan §4.7; ADR 0008; M3-G11     | Unsafe or non-read batches could receive parallel execution.                                                     | Run parallel only when every call is read and parallel-safe.              | Deterministic all-read fake-tool barrier test proves eligible calls overlap within the bound.                  | blocking       | PLANNED — NOT RUN |
+| M3-R2-5 | M3-F01; active plan §4.7; ADR 0008; M3-G12     | Mixed, invalid, unknown, approval-gated, or side-effecting calls could overlap.                                  | Execute those batches wholly sequentially.                                | Barrier fake tools and no-overlap assertions for each fallback class.                                          | blocking       | PLANNED — NOT RUN |
+| M3-R2-6 | M3-F01; active plan §4.7; ADR 0008; M3-G13     | Completion races could make scheduling or returned outcomes nondeterministic.                                    | Schedule deterministically and return outcomes in original request order. | Out-of-order deterministic fake completion with original-order outcome assertions.                             | blocking       | PLANNED — NOT RUN |
+| M3-R2-7 | M3-F01; active plan §4.7; ADR 0008; M3-G11–G13 | Invalid, cancelled, or skipped calls could lack a terminal result.                                               | Give every requested call exactly one terminal outcome.                   | Mixed success/failure/cancellation fake batch asserts one terminal original-order outcome per request.         | blocking       | PLANNED — NOT RUN |
+| M3-R2-8 | M3-F01; active plan §4.7; ADR 0008; M3-G12     | A later unapproved call could start after an earlier failure.                                                    | Do not start later unapproved calls after failure.                        | Sequential fake-tool failure plus start-record assertions proving later unapproved calls never begin.          | blocking       | PLANNED — NOT RUN |
+| M3-R2-9 | M3-F01; active plan §4.7; ADR 0008; M3-G11–G13 | Sleep-based tests could hide a broken concurrency contract.                                                      | Prove concurrency event by event, without timing sleeps.                  | Deterministic fake tools, explicit barriers, start/release events, and original-order assertions.              | blocking       | PLANNED — NOT RUN |
 
 ### M3-R3 — Workspace containment and I/O safety
 
-**Status:** PLANNED — not implemented
+**Mapped findings:** M3-F02, M3-F04, and M3-F06 only.
+**Matrix authority:** active plan §§4.6 and 4.11; ADR 0006; ADR 0008;
+relevant Architecture lifecycle/security invariants.
 
-**Mapped findings:** M3-F02 (model/Harness/context), M3-F04 (Checkpoint
-continue), M3-F06 (no registry/policy/approval/executor).
-
-| Gate    | Required behavior                                                             |
-| ------- | ----------------------------------------------------------------------------- |
-| M3-R3-1 | workspace containment and symlink safety                                      |
-| M3-R3-2 | atomic create/replace and TOCTOU handling                                     |
-| M3-R3-3 | timeout/cancellation controls underlying I/O rather than only racing promises |
-| M3-R3-4 | post-start uncertainty classification                                         |
-| M3-R3-5 | shutdown cancels and drains active runtime/tool work before SQLite close      |
-| M3-R3-6 | cleanup in every terminal path                                                |
+| Gate ID | Authority                                                                             | Production path / concrete risk                                                              | Required behavior                                                   | Exact required proof                                                                                           | Classification | Status            |
+| ------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------- | ----------------- |
+| M3-R3-1 | M3-F02; active plan §4.6; ADR 0008; Architecture lifecycle/security invariants        | Paths or symlinks could escape the explicit workspace.                                       | Enforce workspace containment and symlink safety.                   | Temporary filesystem containment, traversal, and symlink-escape tests with no escaped access.                  | blocking       | PLANNED — NOT RUN |
+| M3-R3-2 | M3-F02; active plan §4.6; ADR 0008; Architecture lifecycle/security invariants        | Create/replace could race path changes or expose partial writes.                             | Use atomic create/replace with TOCTOU-safe handling.                | Temporary filesystem atomic-create/replace and raced-path evidence; no partial or redirected write.            | blocking       | PLANNED — NOT RUN |
+| M3-R3-3 | M3-F04; active plan §§4.6, 4.11; ADR 0006; ADR 0008                                   | Timeout or cancellation could race only the returned promise while underlying I/O continues. | Propagate abort to underlying I/O and produce one terminal outcome. | Abort-aware fake I/O proves underlying operation observes cancellation and cannot later complete successfully. | blocking       | PLANNED — NOT RUN |
+| M3-R3-4 | M3-F04; active plan §4.11; ADR 0006; ADR 0008                                         | Post-start side effects could be reported as safely rolled back.                             | Classify post-start ambiguous effects as uncertain.                 | Fault-injected side-effect fake proves uncertain terminal evidence and no replay.                              | blocking       | PLANNED — NOT RUN |
+| M3-R3-5 | M3-F06; active plan §§4.6, 4.11; ADR 0006; Architecture lifecycle/security invariants | SQLite could close while runtime/tool work remains active.                                   | Cancel and drain active work before storage close.                  | Ordered shutdown fake records cancellation, drain, cleanup, then storage close; asserts close is last.         | blocking       | PLANNED — NOT RUN |
+| M3-R3-6 | M3-F02, M3-F04, M3-F06; active plan §4.11; ADR 0006; ADR 0008                         | Success, failure, timeout, or cancellation could leak temporary resources or handles.        | Clean up in every terminal path.                                    | Terminal-path matrix asserts cleanup for success, failure, cancellation, timeout, and uncertain outcomes.      | blocking       | PLANNED — NOT RUN |
 
 ### M3-R4 — Lifecycle journal, Gemini continuation, and controlled verification
 
-**Status:** PLANNED — not implemented
+**Mapped findings:** M3-F05 and M3-F07 only. Gemini live remains separately
+tracked as optional/nonblocking under the current plan.
+**Matrix authority:** active plan §§4.8–4.12; ADR 0005; ADR 0006; ADR 0007;
+ADR 0010; ADR 0015.
 
-**Mapped findings:** M3-F05 (transcript tool-call pairing), M3-F07 (approval
-Gateway method).
-
-| Gate    | Required behavior                                         |
-| ------- | --------------------------------------------------------- |
-| M3-R4-1 | durable pre/post tool lifecycle journal                   |
-| M3-R4-2 | required journal failure semantics                        |
-| M3-R4-3 | Gemini tool-cycle continuation preservation               |
-| M3-R4-4 | controlled verifier matrix                                |
-| M3-R4-5 | deny/expiry/cancel/uncertain/no-replay evidence           |
-| M3-R4-6 | transcript/journal/checkpoint/finalization/usage evidence |
-| M3-R4-7 | temporary workspace/database isolation and cleanup        |
+| Gate ID | Authority                                                                        | Production path / concrete risk                                                               | Required behavior                                                                   | Exact required proof                                                                                                                          | Classification                    | Status            |
+| ------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- | ----------------- |
+| M3-R4-1 | M3-F05; active plan §§4.8–4.12; ADR 0010                                         | Tool lifecycle actions could lack durable pre/post evidence.                                  | Persist durable pre/post tool lifecycle journal entries.                            | Controlled fake-tool cycle asserts ordered pre-start and terminal journal rows with required correlation.                                     | blocking decision-alignment gates | PLANNED — NOT RUN |
+| M3-R4-2 | M3-F05; active plan §§4.8–4.12; ADR 0010                                         | Required journal write failure could permit I/O or successful continuation.                   | Fail closed for required journal failures before I/O and before success.            | Journal-failure injections prove no start before pre-write and no successful continuation after terminal-write failure.                       | blocking decision-alignment gates | PLANNED — NOT RUN |
+| M3-R4-3 | M3-F05; active plan §§4.8–4.12; ADR 0005; ADR 0007; ADR 0010                     | Gemini tool cycles could lose opaque continuation or fabricate text.                          | Preserve Gemini tool-cycle continuation through host-owned transcript/sidecar flow. | Fake Interactions multi-cycle test asserts unchanged continuation association, `store=false`, and host checkpoint continuation.               | blocking decision-alignment gates | PLANNED — NOT RUN |
+| M3-R4-4 | M3-F07; active plan §§4.8–4.12; ADR 0006; ADR 0008; ADR 0010; ADR 0015           | A controlled verifier might not prove the required end-to-end denial through cleanup matrix.  | Execute the full controlled verifier matrix.                                        | Deterministic fake provider/tools, barriers, temporary workspace/database, and explicit matrix assertions; Gemini live is not required.       | blocking closure-evidence gates   | PLANNED — NOT RUN |
+| M3-R4-5 | M3-F07; active plan §§4.8–4.12; ADR 0006; ADR 0008; ADR 0010                     | Denial, expiry, cancellation, uncertainty, or replay could be unproven.                       | Prove deny/expiry/cancel/uncertain/no-replay behavior.                              | Controlled cases assert no start on deny/expiry, abort-aware cancellation, uncertain evidence, and no replay.                                 | blocking closure-evidence gates   | PLANNED — NOT RUN |
+| M3-R4-6 | M3-F07; active plan §§4.8–4.12; ADR 0005; ADR 0006; ADR 0007; ADR 0010; ADR 0015 | Durable transcript, journal, checkpoint, finalization, or usage evidence could be incomplete. | Prove transcript, journal, checkpoint, finalization, and usage evidence.            | Controlled assertions inspect atomic transcript entries, ordered journal, checkpoint decision, one finalization, and per-call usage evidence. | blocking closure-evidence gates   | PLANNED — NOT RUN |
+| M3-R4-7 | M3-F07; active plan §§4.8–4.12; ADR 0006; ADR 0010                               | Verification could leak workspace/database state or rely on shared state.                     | Isolate and clean temporary workspace and database.                                 | Controlled verifier uses fresh temporary workspace/database and asserts cleanup after every terminal path.                                    | blocking closure-evidence gates   | PLANNED — NOT RUN |
 
 ## 8. Migration Decision
 
