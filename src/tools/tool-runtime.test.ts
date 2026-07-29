@@ -359,11 +359,11 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       expect(ioExecuted).toBe(true);
 
       expect(events).toEqual([
-        "tool.batch.planned",
         "tool.requested",
         "policy.evaluated",
         "approval.requested",
         "approval.resolved",
+        "tool.batch.planned",
         "tool.started",
         "tool.completed",
         "tool.batch.completed",
@@ -1117,6 +1117,107 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       expect(originalExecutorCalls).toBe(1);
       expect(replacementRendererCalls).toBe(0);
       expect(replacementExecutorCalls).toBe(0);
+    });
+  });
+
+  describe("M3-R2 batch admission and bounded parallelism", () => {
+    it("admits the whole batch before bounded read implementations start and preserves request order", async () => {
+      const ids = createSequentialIdFactory();
+      const registry = new ToolRegistry();
+      let active = 0;
+      let peak = 0;
+      const starts: string[] = [];
+      const releases = new Map<string, () => void>();
+      const entered: Array<() => void> = [];
+      registry.register({
+        name: "test.read",
+        descriptorVersion: "1",
+        owningModule: "test",
+        description: "barrier read",
+        argumentSchema: Type.Object({ path: Type.String() }),
+        resultSchema: Type.Object({ path: Type.String() }),
+        effectClassification: "read-only",
+        sensitivityClassification: "none",
+        executionTarget: "workspace",
+        sandboxRequirement: "host-workspace-v1",
+        timeoutMs: 5000,
+        cancellationSupport: true,
+        concurrencyTrait: "parallel-safe",
+        idempotencyTrait: true,
+        approvalSummaryRenderer: () => "read",
+        redactionRules: [],
+        inputLimits: {},
+        outputLimits: {},
+        progressFingerprintVersion: "1",
+        execute: async (args) => {
+          active++;
+          peak = Math.max(peak, active);
+          starts.push(args.path as string);
+          entered.shift()?.();
+          await new Promise<void>((resolve) =>
+            releases.set(args.path as string, resolve),
+          );
+          active--;
+          return { path: args.path };
+        },
+      });
+      registry.freeze();
+      const policy = {
+        evaluateInvocation: async (
+          _tool: ToolDescriptor,
+          args: Record<string, unknown>,
+        ) => ({
+          decision: "allow",
+          reason: "allowed",
+          policyProfile: "test",
+          policyVersion: "1",
+          targetPath: args.path,
+          policyConstraints: {},
+          redactionMetadata: {},
+        }),
+      } as any;
+      const runtime = new ToolRuntime(
+        registry,
+        policy,
+        new ApprovalCoordinator(ids),
+        {
+          maxConcurrentToolCalls: 2,
+        },
+      );
+      const context: ToolBatchContext = {
+        agentId: createAgentId("primary"),
+        sessionKey: createSessionKey("agent:primary:r2"),
+        sessionId: ids.nextSessionId(),
+        runId: ids.nextRunId(),
+        attemptId: ids.nextAttemptId(),
+        modelCallId: ids.nextModelCallId(),
+        workspaceRoot: process.cwd(),
+        sandboxProfile: "host-workspace-v1",
+        totalRunToolCalls: 0,
+      };
+      const requests = ["A", "B", "C"].map((path, index) => ({
+        toolCallId: createToolCallId(`r2_${path}`),
+        modelCallId: context.modelCallId,
+        ordinal: index + 1,
+        toolName: "test.read",
+        rawArguments: { path },
+      }));
+      const twoStarted = new Promise<void>((resolve) => {
+        entered.push(() => {}, resolve);
+      });
+      const result = runtime.executeBatch(requests, context);
+      await twoStarted;
+      expect(starts).toHaveLength(2);
+      expect(peak).toBe(2);
+      releases.get("B")!();
+      await new Promise<void>((resolve) => entered.push(resolve));
+      expect(starts).toHaveLength(3);
+      expect(peak).toBe(2);
+      releases.get("A")!();
+      releases.get("C")!();
+      expect((await result).map((outcome) => outcome.toolCallId)).toEqual(
+        requests.map((request) => request.toolCallId),
+      );
     });
   });
 });

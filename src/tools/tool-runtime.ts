@@ -70,6 +70,16 @@ type InvocationPolicySnapshot = Readonly<{
   redactionMetadata: Record<string, unknown>;
 }>;
 
+type BatchPlanItem = {
+  req: NormalizedToolRequest;
+  tool?: ToolDescriptor;
+  normalizedArguments?: Record<string, unknown>;
+  admissionError?: AppError;
+  policy?: InvocationPolicySnapshot | undefined;
+  executionContext?: ToolExecutionContext;
+  approvalGated?: boolean;
+};
+
 function snapshotInvocationPolicy(
   result: unknown,
 ): InvocationPolicySnapshot | undefined {
@@ -208,16 +218,7 @@ export class ToolRuntime {
       );
     }
 
-    this.emitEvent("tool.batch.planned", runId, {
-      data: { count: requests.length },
-    });
-
-    const plannedItems: Array<{
-      req: NormalizedToolRequest;
-      tool?: ToolDescriptor;
-      normalizedArguments?: Record<string, unknown>;
-      argError?: AppError;
-    }> = [];
+    const plannedItems: BatchPlanItem[] = [];
 
     for (const req of requests) {
       this.emitEvent("tool.requested", runId, {
@@ -229,7 +230,7 @@ export class ToolRuntime {
       if (!tool) {
         plannedItems.push({
           req,
-          argError: new AppError(
+          admissionError: new AppError(
             "TOOL_NOT_FOUND",
             `Tool '${req.toolName}' is not registered`,
           ),
@@ -245,7 +246,7 @@ export class ToolRuntime {
         plannedItems.push({
           req,
           tool,
-          argError: new AppError(
+          admissionError: new AppError(
             "TOOL_ARGUMENTS_INVALID",
             `Invalid arguments for tool '${req.toolName}': ${argVal.error}`,
           ),
@@ -264,7 +265,7 @@ export class ToolRuntime {
           req,
           tool,
           normalizedArguments,
-          argError: new AppError(
+          admissionError: new AppError(
             "TOOL_ARGUMENTS_INVALID",
             `Tool arguments size ${argBytes} bytes exceeds limit ${this.limits.maxToolArgumentBytes}`,
           ),
@@ -275,27 +276,208 @@ export class ToolRuntime {
       plannedItems.push({ req, tool, normalizedArguments });
     }
 
+    for (const item of plannedItems) {
+      if (item.admissionError || !item.tool || !item.normalizedArguments) {
+        continue;
+      }
+      try {
+        item.policy = snapshotInvocationPolicy(
+          await this.policy.evaluateInvocation(
+            item.tool,
+            item.normalizedArguments,
+            workspaceRoot,
+          ),
+        );
+      } catch {
+        item.policy = undefined;
+      }
+      if (!item.policy) {
+        item.admissionError = new AppError(
+          "TOOL_POLICY_DENIED",
+          `Policy returned invalid authority for tool '${item.req.toolName}'`,
+        );
+        continue;
+      }
+      this.emitEvent("policy.evaluated", runId, {
+        toolCallId: item.req.toolCallId,
+        data: { decision: item.policy.decision, reason: item.policy.reason },
+      });
+      if (item.policy.decision === "deny") {
+        item.admissionError = new AppError(
+          "TOOL_POLICY_DENIED",
+          `Policy denied tool '${item.req.toolName}': ${item.policy.reason}`,
+        );
+      } else if (
+        item.tool.effectClassification === "side-effecting" &&
+        item.policy.decision !== "require-approval"
+      ) {
+        item.admissionError = new AppError(
+          "TOOL_POLICY_DENIED",
+          `Side-effecting tool '${item.req.toolName}' requires explicit approval authority`,
+        );
+      } else if (item.policy.decision === "require-approval") {
+        item.approvalGated = true;
+        const actionSummary = this.registry.renderApprovalSummary(
+          item.req.toolName,
+          item.normalizedArguments,
+        );
+        const approvalStatus = await this.approvalCoordinator.requestApproval({
+          agentId: admittedBatchContext.agentId,
+          sessionKey: admittedBatchContext.sessionKey,
+          sessionId: admittedBatchContext.sessionId,
+          runId: admittedBatchContext.runId,
+          attemptId: admittedBatchContext.attemptId,
+          modelCallId: admittedBatchContext.modelCallId,
+          toolCallId: item.req.toolCallId,
+          toolName: item.req.toolName,
+          normalizedArguments: item.normalizedArguments,
+          workspaceRoot,
+          executionTarget: item.tool.executionTarget,
+          sandboxProfile: admittedBatchContext.sandboxProfile,
+          sandboxRequirement: item.tool.sandboxRequirement,
+          actionSummary,
+          decision: item.policy.decision,
+          policyProfile: item.policy.policyProfile,
+          policyVersion: item.policy.policyVersion,
+          reason: item.policy.reason,
+          ...(item.policy.targetPath !== undefined
+            ? { targetPath: item.policy.targetPath }
+            : {}),
+          policyConstraints: item.policy.policyConstraints,
+          redactionMetadata: item.policy.redactionMetadata,
+          timeoutMs: this.limits.approvalTimeoutMs,
+          ...(signal ? { signal } : {}),
+        });
+        const binding = this.approvalCoordinator.getBindingByToolCallId(
+          item.req.toolCallId,
+        );
+        this.emitEvent("approval.resolved", runId, {
+          toolCallId: item.req.toolCallId,
+          ...(binding ? { approvalId: binding.approvalId } : {}),
+          data: { status: approvalStatus },
+        });
+        if (approvalStatus !== "allowed") {
+          item.admissionError = new AppError(
+            approvalStatus === "expired"
+              ? "TOOL_APPROVAL_EXPIRED"
+              : approvalStatus === "cancelled"
+                ? "TOOL_CANCELLED"
+                : "TOOL_APPROVAL_DENIED",
+            `Approval for tool '${item.req.toolName}' was ${approvalStatus}`,
+          );
+        } else {
+          const bindingValid =
+            binding &&
+            binding.agentId === admittedBatchContext.agentId &&
+            binding.sessionKey === admittedBatchContext.sessionKey &&
+            binding.sessionId === admittedBatchContext.sessionId &&
+            binding.runId === admittedBatchContext.runId &&
+            binding.attemptId === admittedBatchContext.attemptId &&
+            binding.modelCallId === admittedBatchContext.modelCallId &&
+            binding.toolCallId === item.req.toolCallId &&
+            binding.toolName === item.req.toolName &&
+            binding.normalizedArgumentDigest ===
+              this.approvalCoordinator.computeDigest(
+                item.normalizedArguments,
+              ) &&
+            binding.workspaceDigest ===
+              this.approvalCoordinator.computeWorkspaceDigest(workspaceRoot) &&
+            binding.executionTarget === item.tool.executionTarget &&
+            binding.sandboxProfile === admittedBatchContext.sandboxProfile &&
+            binding.sandboxRequirement === item.tool.sandboxRequirement;
+          if (!bindingValid) {
+            item.admissionError = new AppError(
+              "TOOL_APPROVAL_DENIED",
+              `Approval binding validation failed for tool '${item.req.toolName}'`,
+            );
+            continue;
+          }
+          let rechecked: InvocationPolicySnapshot | undefined;
+          try {
+            rechecked = snapshotInvocationPolicy(
+              await this.policy.evaluateInvocation(
+                item.tool,
+                item.normalizedArguments,
+                workspaceRoot,
+              ),
+            );
+          } catch {
+            rechecked = undefined;
+          }
+          if (
+            !rechecked ||
+            rechecked.decision !== "require-approval" ||
+            rechecked.policyProfile !== item.policy.policyProfile ||
+            rechecked.policyVersion !== item.policy.policyVersion ||
+            rechecked.reason !== item.policy.reason ||
+            rechecked.targetPath !== item.policy.targetPath ||
+            this.approvalCoordinator.computeCanonicalDigest(
+              rechecked.policyConstraints,
+            ) !==
+              this.approvalCoordinator.computeCanonicalDigest(
+                item.policy.policyConstraints,
+              ) ||
+            this.approvalCoordinator.computeCanonicalDigest(
+              rechecked.redactionMetadata,
+            ) !==
+              this.approvalCoordinator.computeCanonicalDigest(
+                item.policy.redactionMetadata,
+              )
+          ) {
+            item.admissionError = new AppError(
+              "TOOL_POLICY_DENIED",
+              `Policy recheck failed for tool '${item.req.toolName}': decision changed or bound field mismatched`,
+            );
+          } else {
+            item.policy = rechecked;
+          }
+        }
+      }
+      if (!item.admissionError) {
+        item.executionContext = deepFreeze({
+          agentId: admittedBatchContext.agentId,
+          workspaceRoot,
+          targetPath: item.policy.targetPath ?? "",
+          toolCallId: item.req.toolCallId,
+          deadline:
+            Date.now() +
+            Math.min(item.tool.timeoutMs, this.limits.toolTimeoutMs),
+          ...(signal ? { signal } : {}),
+          inputLimits: item.tool.inputLimits,
+          outputLimits: item.tool.outputLimits,
+          policyConstraints: item.policy.policyConstraints,
+          sandboxProfile: admittedBatchContext.sandboxProfile,
+        });
+      }
+    }
+
     const allParallelSafeRead = plannedItems.every(
       (item) =>
+        !item.admissionError &&
         item.tool?.effectClassification === "read-only" &&
-        item.tool?.concurrencyTrait === "parallel-safe",
+        item.tool?.concurrencyTrait === "parallel-safe" &&
+        item.policy?.decision === "allow",
     );
 
     const isSequential = !allParallelSafeRead;
 
-    const executeItem = async (item: {
-      req: NormalizedToolRequest;
-      tool?: ToolDescriptor;
-      normalizedArguments?: Record<string, unknown>;
-      argError?: AppError;
-    }): Promise<NormalizedToolOutcome> => {
-      const startTime = Date.now();
-      const { req, tool, normalizedArguments, argError } = item;
+    this.emitEvent("tool.batch.planned", runId, {
+      data: {
+        count: requests.length,
+        schedule: isSequential ? "sequential" : "parallel",
+      },
+    });
 
-      if (argError) {
+    const executeItem = async (
+      item: BatchPlanItem,
+    ): Promise<NormalizedToolOutcome> => {
+      const startTime = Date.now();
+      const { req, tool, normalizedArguments, admissionError } = item;
+
+      if (admissionError) {
         this.emitEvent("tool.failed", runId, {
           toolCallId: req.toolCallId,
-          data: { error: argError.message, code: argError.code },
+          data: { error: admissionError.message, code: admissionError.code },
         });
         return {
           toolCallId: req.toolCallId,
@@ -304,7 +486,7 @@ export class ToolRuntime {
           terminalState: "failed-before-known-side-effect",
           ok: false,
           ...(normalizedArguments ? { normalizedArguments } : {}),
-          error: { code: argError.code, message: argError.message },
+          error: { code: admissionError.code, message: admissionError.message },
           durationMs: Date.now() - startTime,
         };
       }
@@ -329,18 +511,7 @@ export class ToolRuntime {
         };
       }
 
-      let polResult: InvocationPolicySnapshot | undefined;
-      try {
-        polResult = snapshotInvocationPolicy(
-          await this.policy.evaluateInvocation(
-            tool,
-            normalizedArguments,
-            workspaceRoot,
-          ),
-        );
-      } catch {
-        polResult = undefined;
-      }
+      let polResult: InvocationPolicySnapshot | undefined = item.policy;
 
       if (!polResult) {
         const err = new AppError(
@@ -362,14 +533,6 @@ export class ToolRuntime {
           durationMs: Date.now() - startTime,
         };
       }
-
-      this.emitEvent("policy.evaluated", runId, {
-        toolCallId: req.toolCallId,
-        data: {
-          decision: polResult.decision,
-          reason: polResult.reason,
-        },
-      });
 
       if (polResult.decision === "deny") {
         const err = new AppError(
@@ -418,7 +581,7 @@ export class ToolRuntime {
 
       let executionPolicy = polResult;
 
-      if (polResult.decision === "require-approval") {
+      if (polResult.decision === "require-approval" && !item.approvalGated) {
         let actionSummary: string;
         try {
           actionSummary = this.registry.renderApprovalSummary(
@@ -636,19 +799,23 @@ export class ToolRuntime {
         executionPolicy = recheckPolicy!;
       }
 
-      const execContext: ToolExecutionContext = {
-        agentId: admittedBatchContext.agentId,
-        workspaceRoot,
-        targetPath: executionPolicy.targetPath ?? "",
-        toolCallId: req.toolCallId,
-        deadline:
-          Date.now() + Math.min(tool.timeoutMs, this.limits.toolTimeoutMs),
-        ...(signal ? { signal } : {}),
-        inputLimits: tool.inputLimits,
-        outputLimits: tool.outputLimits,
-        policyConstraints: executionPolicy.policyConstraints,
-        sandboxProfile: admittedBatchContext.sandboxProfile,
-      };
+      const execContext = item.executionContext;
+      if (!execContext) {
+        const err = new AppError(
+          "TOOL_IMPLEMENTATION_FAILED",
+          `Tool '${req.toolName}' did not complete admission`,
+        );
+        return {
+          toolCallId: req.toolCallId,
+          toolName: req.toolName,
+          ordinal: req.ordinal,
+          terminalState: "failed-before-known-side-effect",
+          ok: false,
+          normalizedArguments,
+          error: { code: err.code, message: err.message },
+          durationMs: Date.now() - startTime,
+        };
+      }
 
       if (signal?.aborted) {
         this.emitEvent("tool.cancelled", runId, {
@@ -788,16 +955,49 @@ export class ToolRuntime {
           !outcome.ok &&
           item.tool?.effectClassification === "side-effecting"
         ) {
+          for (const laterItem of plannedItems.slice(outcomes.length)) {
+            outcomes.push({
+              toolCallId: laterItem.req.toolCallId,
+              toolName: laterItem.req.toolName,
+              ordinal: laterItem.req.ordinal,
+              terminalState: "not-started",
+              ok: false,
+              ...(laterItem.normalizedArguments
+                ? { normalizedArguments: laterItem.normalizedArguments }
+                : {}),
+              error: {
+                code: "TOOL_CANCELLED",
+                message:
+                  "Tool batch did not start after an earlier side-effecting failure",
+              },
+              durationMs: 0,
+            });
+          }
           break;
         }
       }
     } else {
-      outcomes = await Promise.all(
-        plannedItems.map((item) => executeItem(item)),
+      outcomes = new Array(plannedItems.length);
+      let nextIndex = 0;
+      const worker = async (): Promise<void> => {
+        for (;;) {
+          const index = nextIndex++;
+          if (index >= plannedItems.length) return;
+          outcomes[index] = await executeItem(plannedItems[index]!);
+        }
+      };
+      await Promise.all(
+        Array.from(
+          {
+            length: Math.min(
+              this.limits.maxConcurrentToolCalls,
+              plannedItems.length,
+            ),
+          },
+          worker,
+        ),
       );
     }
-
-    outcomes.sort((a, b) => a.ordinal - b.ordinal);
 
     this.emitEvent("tool.batch.completed", runId, {
       data: { count: outcomes.length },
