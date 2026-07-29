@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { AppError } from "../core/errors.js";
+import { resolveSafeWorkspacePath } from "./workspace-path-safety.js";
 import {
   WorkspaceListArgsSchema,
   WorkspaceListResultSchema,
@@ -41,7 +42,10 @@ export const workspaceListTool: ToolRegistration = {
     args: { path: string; limit?: number },
     context: ToolExecutionContext,
   ) => {
-    const fullPath = path.resolve(context.workspaceRoot, context.targetPath);
+    const { fullPath } = await resolveSafeWorkspacePath(
+      context.workspaceRoot,
+      context.targetPath,
+    );
 
     if (!fs.existsSync(fullPath)) {
       throw new AppError(
@@ -108,7 +112,10 @@ export const workspaceReadTextTool: ToolRegistration = {
     args: { path: string; offsetBytes?: number; maxBytes?: number },
     context: ToolExecutionContext,
   ) => {
-    const fullPath = path.resolve(context.workspaceRoot, context.targetPath);
+    const { fullPath } = await resolveSafeWorkspacePath(
+      context.workspaceRoot,
+      context.targetPath,
+    );
 
     if (!fs.existsSync(fullPath)) {
       throw new AppError(
@@ -208,14 +215,17 @@ export const workspaceWriteTextTool: ToolRegistration = {
     args: { path: string; content: string; mode: "create" | "replace" },
     context: ToolExecutionContext,
   ) => {
-    const fullPath = path.resolve(context.workspaceRoot, context.targetPath);
+    const { fullPath, workspaceRoot } = await resolveSafeWorkspacePath(
+      context.workspaceRoot,
+      context.targetPath,
+    );
     const parentDir = path.dirname(fullPath);
 
     // No implicit parent-directory creation (Section 4.6)
     if (!fs.existsSync(parentDir)) {
       throw new AppError(
         "TOOL_IMPLEMENTATION_FAILED",
-        `Parent directory '${path.relative(context.workspaceRoot, parentDir)}' does not exist`,
+        `Parent directory '${path.relative(workspaceRoot, parentDir)}' does not exist`,
       );
     }
 

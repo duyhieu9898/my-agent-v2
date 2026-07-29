@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as joinPath from "node:path";
 import { describe, expect, it } from "vitest";
 import { createTemporaryDatabase } from "../test/foundation-fixtures.js";
@@ -65,5 +66,92 @@ describe("WorkspacePolicy", () => {
     expect(res.decision).toBe("require-approval");
 
     close();
+  });
+
+  it("denies lexical escapes and returns the normalized admitted target", async () => {
+    const workspaceRoot = fs.mkdtempSync(
+      joinPath.join(os.tmpdir(), "workspace-policy-"),
+    );
+    const policy = new WorkspacePolicy();
+    try {
+      for (const target of [
+        "",
+        "/absolute.txt",
+        "safe/../../outside.txt",
+        "../outside.txt",
+        "safe\u0000file.txt",
+        "safe\nfile.txt",
+        ".env",
+      ]) {
+        const result = await policy.evaluateInvocation(
+          workspaceListTool,
+          { path: target },
+          workspaceRoot,
+        );
+        expect(result.decision, target).toBe("deny");
+      }
+
+      const result = await policy.evaluateInvocation(
+        workspaceListTool,
+        { path: "sub/../safe.txt" },
+        workspaceRoot,
+      );
+      expect(result).toMatchObject({
+        decision: "allow",
+        targetPath: "safe.txt",
+      });
+    } finally {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("denies every existing symlink component, including internal links", async () => {
+    const parent = fs.mkdtempSync(
+      joinPath.join(os.tmpdir(), "workspace-policy-"),
+    );
+    const workspaceRoot = joinPath.join(parent, "workspace");
+    const outsideRoot = joinPath.join(parent, "workspace-escape");
+    fs.mkdirSync(workspaceRoot);
+    fs.mkdirSync(outsideRoot);
+    fs.mkdirSync(joinPath.join(workspaceRoot, "inside"));
+    fs.writeFileSync(
+      joinPath.join(workspaceRoot, "inside", "file.txt"),
+      "inside",
+    );
+    fs.writeFileSync(joinPath.join(outsideRoot, "sentinel.txt"), "outside");
+    fs.symlinkSync(outsideRoot, joinPath.join(workspaceRoot, "outside-dir"));
+    fs.symlinkSync(
+      joinPath.join(outsideRoot, "sentinel.txt"),
+      joinPath.join(workspaceRoot, "outside-file"),
+    );
+    fs.symlinkSync(
+      joinPath.join(workspaceRoot, "inside"),
+      joinPath.join(workspaceRoot, "inside-dir"),
+    );
+    fs.symlinkSync(
+      joinPath.join(workspaceRoot, "inside", "file.txt"),
+      joinPath.join(workspaceRoot, "inside-file"),
+    );
+    const policy = new WorkspacePolicy();
+    try {
+      for (const target of [
+        "outside-dir/sentinel.txt",
+        "outside-file",
+        "inside-dir/file.txt",
+        "inside-file",
+      ]) {
+        const result = await policy.evaluateInvocation(
+          workspaceListTool,
+          { path: target },
+          workspaceRoot,
+        );
+        expect(result.decision, target).toBe("deny");
+      }
+      expect(
+        fs.readFileSync(joinPath.join(outsideRoot, "sentinel.txt"), "utf8"),
+      ).toBe("outside");
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
   });
 });

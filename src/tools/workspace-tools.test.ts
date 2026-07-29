@@ -1,0 +1,119 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { describe, expect, it } from "vitest";
+import type { ToolExecutionContext } from "./contracts.js";
+import {
+  workspaceListTool,
+  workspaceReadTextTool,
+  workspaceWriteTextTool,
+} from "./workspace-tools.js";
+import { isWorkspacePathContained } from "./workspace-path-safety.js";
+
+function context(
+  workspaceRoot: string,
+  targetPath: string,
+): ToolExecutionContext {
+  return {
+    agentId: "agent_primary" as any,
+    workspaceRoot,
+    targetPath,
+    toolCallId: "tool_call" as any,
+    inputLimits: {},
+    outputLimits: {},
+    policyConstraints: {},
+    sandboxProfile: "host-workspace-v1",
+  };
+}
+
+describe("workspace tools containment", () => {
+  it("uses path-separator-aware containment boundaries", () => {
+    expect(
+      isWorkspacePathContained("/work/root", "/work/root-escape/file.txt"),
+    ).toBe(false);
+    expect(isWorkspacePathContained("/work/root", "/work/root/file.txt")).toBe(
+      true,
+    );
+  });
+
+  it("independently rejects escaped and symlink targets when policy is bypassed", async () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-tools-"));
+    const workspaceRoot = path.join(parent, "workspace");
+    const outsideRoot = path.join(parent, "workspace-escape");
+    fs.mkdirSync(workspaceRoot);
+    fs.mkdirSync(outsideRoot);
+    fs.mkdirSync(path.join(workspaceRoot, "inside"));
+    fs.writeFileSync(path.join(outsideRoot, "sentinel.txt"), "outside secret");
+    fs.writeFileSync(path.join(workspaceRoot, "inside", "file.txt"), "inside");
+    fs.symlinkSync(outsideRoot, path.join(workspaceRoot, "outside-dir"));
+    fs.symlinkSync(
+      path.join(outsideRoot, "sentinel.txt"),
+      path.join(workspaceRoot, "outside-file"),
+    );
+    fs.symlinkSync(
+      path.join(workspaceRoot, "inside"),
+      path.join(workspaceRoot, "inside-dir"),
+    );
+    fs.symlinkSync(
+      path.join(workspaceRoot, "inside", "file.txt"),
+      path.join(workspaceRoot, "inside-file"),
+    );
+    try {
+      for (const target of [
+        "../workspace-escape/sentinel.txt",
+        "outside-dir/sentinel.txt",
+        "outside-file",
+        "inside-dir/file.txt",
+        "inside-file",
+      ]) {
+        await expect(
+          workspaceReadTextTool.execute(
+            { path: target },
+            context(workspaceRoot, target),
+          ),
+        ).rejects.toMatchObject({ code: "TOOL_SANDBOX_UNAVAILABLE" });
+      }
+
+      await expect(
+        workspaceWriteTextTool.execute(
+          { path: "outside-dir/new.txt", content: "escaped", mode: "create" },
+          context(workspaceRoot, "outside-dir/new.txt"),
+        ),
+      ).rejects.toMatchObject({ code: "TOOL_SANDBOX_UNAVAILABLE" });
+      await expect(
+        workspaceWriteTextTool.execute(
+          { path: "outside-file", content: "escaped", mode: "replace" },
+          context(workspaceRoot, "outside-file"),
+        ),
+      ).rejects.toMatchObject({ code: "TOOL_SANDBOX_UNAVAILABLE" });
+      expect(
+        fs.readFileSync(path.join(outsideRoot, "sentinel.txt"), "utf8"),
+      ).toBe("outside secret");
+      expect(fs.existsSync(path.join(outsideRoot, "new.txt"))).toBe(false);
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("uses normalized execution context paths for safe workspace I/O", async () => {
+    const workspaceRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "workspace-tools-"),
+    );
+    fs.writeFileSync(path.join(workspaceRoot, "safe.txt"), "safe content");
+    try {
+      const result = await workspaceReadTextTool.execute(
+        { path: "sub/../safe.txt" },
+        context(workspaceRoot, "safe.txt"),
+      );
+      expect(result).toMatchObject({ path: "safe.txt", text: "safe content" });
+      await expect(
+        workspaceListTool.execute(
+          { path: "/tmp" },
+          context(workspaceRoot, "/tmp"),
+        ),
+      ).rejects.toMatchObject({ code: "TOOL_SANDBOX_UNAVAILABLE" });
+    } finally {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});

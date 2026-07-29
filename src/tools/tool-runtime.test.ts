@@ -216,6 +216,104 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
     });
   });
 
+  describe("M3-R3A workspace policy containment", () => {
+    it("binds the normalized policy target as the workspace execution authority", async () => {
+      const tempWorkspace = createTempWorkspace();
+      fs.writeFileSync(
+        path.join(tempWorkspace.workspaceRoot, "safe.txt"),
+        "safe",
+      );
+      const { runtime, batchContext } = setupTestRuntime(
+        tempWorkspace.workspaceRoot,
+      );
+      try {
+        const [outcome] = await runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_normalized_path"),
+              modelCallId: batchContext.modelCallId,
+              ordinal: 1,
+              toolName: "workspace.read_text",
+              rawArguments: { path: "sub/../safe.txt" },
+            },
+          ],
+          batchContext,
+        );
+        expect(outcome).toMatchObject({
+          ok: true,
+          normalizedArguments: { path: "sub/../safe.txt" },
+          result: { path: "safe.txt", text: "safe" },
+        });
+      } finally {
+        tempWorkspace.cleanup();
+      }
+    });
+
+    it("denies stable symlink reads and writes before approval, start, or execution", async () => {
+      const parent = fs.mkdtempSync(
+        path.join(os.tmpdir(), "runtime-workspace-"),
+      );
+      const workspaceRoot = path.join(parent, "workspace");
+      const outsideRoot = path.join(parent, "workspace-escape");
+      fs.mkdirSync(workspaceRoot);
+      fs.mkdirSync(outsideRoot);
+      fs.writeFileSync(
+        path.join(outsideRoot, "sentinel.txt"),
+        "outside secret",
+      );
+      fs.symlinkSync(outsideRoot, path.join(workspaceRoot, "outside-dir"));
+      const { runtime, approvalCoordinator, batchContext } =
+        setupTestRuntime(workspaceRoot);
+      const events: string[] = [];
+      let approvalRequests = 0;
+      runtime.onEvent((event) => events.push(event.type));
+      approvalCoordinator.onRequest(() => approvalRequests++);
+      try {
+        const outcomes = await runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_symlink_read"),
+              modelCallId: batchContext.modelCallId,
+              ordinal: 1,
+              toolName: "workspace.read_text",
+              rawArguments: { path: "outside-dir/sentinel.txt" },
+            },
+            {
+              toolCallId: createToolCallId("tcall_symlink_write"),
+              modelCallId: batchContext.modelCallId,
+              ordinal: 2,
+              toolName: "workspace.write_text",
+              rawArguments: {
+                path: "outside-dir/new.txt",
+                content: "escaped",
+                mode: "create",
+              },
+            },
+          ],
+          batchContext,
+        );
+
+        expect(outcomes).toHaveLength(2);
+        expect(outcomes.map((outcome) => outcome.error?.code)).toEqual([
+          "TOOL_POLICY_DENIED",
+          "TOOL_POLICY_DENIED",
+        ]);
+        expect(outcomes.map((outcome) => outcome.terminalState)).toEqual([
+          "failed-before-known-side-effect",
+          "failed-before-known-side-effect",
+        ]);
+        expect(approvalRequests).toBe(0);
+        expect(events).not.toContain("tool.started");
+        expect(
+          fs.readFileSync(path.join(outsideRoot, "sentinel.txt"), "utf8"),
+        ).toBe("outside secret");
+        expect(fs.existsSync(path.join(outsideRoot, "new.txt"))).toBe(false);
+      } finally {
+        fs.rmSync(parent, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe("Host ToolCallId vs Provider Call ID", () => {
     it("keeps providerCallId distinct from host toolCallId and preserves uniqueness on duplicate provider IDs", async () => {
       const { runtime, batchContext } = setupTestRuntime();

@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
-import * as fs from "node:fs";
 import * as path from "node:path";
-import { AppError } from "../core/errors.js";
 import type { ToolDescriptor } from "../tools/contracts.js";
+import {
+  normalizeWorkspaceTarget,
+  resolveSafeWorkspacePath,
+} from "../tools/workspace-path-safety.js";
 
 export type PolicyDecisionType = "allow" | "deny" | "require-approval";
 
@@ -60,53 +62,22 @@ export class WorkspacePolicy {
       redactionMetadata: {},
     };
 
-    const targetPath = rawArgs["path"];
-    if (typeof targetPath !== "string" || targetPath.length === 0) {
+    const rawTargetPath = rawArgs["path"];
+    if (typeof rawTargetPath !== "string") {
       return {
         ...baseResult,
         decision: "deny",
         reason: "Path argument must be a non-empty string",
       };
     }
-
-    // Check NUL/control characters
-    for (let i = 0; i < targetPath.length; i++) {
-      const code = targetPath.charCodeAt(i);
-      if (code <= 31 || code === 127) {
-        return {
-          ...baseResult,
-          decision: "deny",
-          reason: "Control-character path injection rejected",
-        };
-      }
-    }
-
-    // Check absolute path
-    if (path.isAbsolute(targetPath)) {
+    let normalizedRel: string;
+    try {
+      normalizedRel = normalizeWorkspaceTarget(rawTargetPath);
+    } catch {
       return {
         ...baseResult,
         decision: "deny",
-        reason: "Absolute paths not permitted",
-      };
-    }
-
-    const normalizedRel = path.normalize(targetPath);
-    if (normalizedRel.startsWith("..") || path.isAbsolute(normalizedRel)) {
-      return {
-        ...baseResult,
-        decision: "deny",
-        reason: "Path traversal out of workspace rejected",
-      };
-    }
-
-    const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
-    const resolvedFullPath = path.resolve(resolvedWorkspaceRoot, normalizedRel);
-
-    if (!resolvedFullPath.startsWith(resolvedWorkspaceRoot)) {
-      return {
-        ...baseResult,
-        decision: "deny",
-        reason: "Resolved path escapes workspace root",
+        reason: "Workspace path is not safely contained",
       };
     }
 
@@ -132,30 +103,13 @@ export class WorkspacePolicy {
       }
     }
 
-    // Symlink escape check
     try {
-      let current = resolvedWorkspaceRoot;
-      for (const segment of segments) {
-        current = path.join(current, segment);
-        if (fs.existsSync(current)) {
-          const lstat = await fs.promises.lstat(current);
-          if (lstat.isSymbolicLink()) {
-            const real = await fs.promises.realpath(current);
-            if (!real.startsWith(resolvedWorkspaceRoot)) {
-              return {
-                ...baseResult,
-                decision: "deny",
-                reason: "Symlink points outside workspace root",
-              };
-            }
-          }
-        }
-      }
+      await resolveSafeWorkspacePath(workspaceRoot, normalizedRel);
     } catch {
       return {
         ...baseResult,
         decision: "deny",
-        reason: "Failed path safety check during resolution",
+        reason: "Workspace path failed containment safety checks",
       };
     }
 
