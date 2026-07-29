@@ -58,6 +58,36 @@ requested.
 For implementation, prove observable behavior rather than only creating files,
 classes, or interfaces.
 
+## Locked Acceptance Contract
+
+CLI executes only the gate IDs and behavior explicitly authorized by the task.
+
+For each required gate, the task should provide:
+
+- authority;
+- required behavior;
+- required proof;
+- non-goals.
+
+CLI must stop when a gate is materially ambiguous or requires a new
+product/architecture decision.
+
+CLI must not infer additional blocking requirements from broad intent.
+
+Potential improvements outside the locked gates are reported as provisional P2
+and are not implemented.
+
+The report must map each required gate to:
+
+- changed source locator;
+- proof locator;
+- validation result;
+- `satisfied`, `unsatisfied`, or `not attempted`.
+
+CLI classification remains provisional. ChatGPT audit remains responsible for
+checking the locked contract against pushed source. Audit does not grant CLI
+authority to fix newly discovered unrelated findings.
+
 ## Validation
 
 Run the validation required by the task or active plan.
@@ -92,6 +122,7 @@ git rev-list --left-right --count '@{upstream}...HEAD'
 ```
 
 A checkpoint is valid when:
+
 - **HEAD**: `<commit>`
 - **branch**: `<expected branch>`
 - **working tree**: `clean`
@@ -113,6 +144,7 @@ A checkpoint is valid when:
 Do NOT require a report for every task. Follow this single rule:
 
 **Report required:**
+
 - implementation checkpoint needing ChatGPT source review;
 - remediation;
 - evidence-only verification;
@@ -121,6 +153,7 @@ Do NOT require a report for every task. Follow this single rule:
 - task with commit/push or complex validation.
 
 **Report optional:**
+
 - docs typo;
 - formatting;
 - small changes directly verifiable from commit;
@@ -146,10 +179,10 @@ $agent-report
 ```
 
 Provide or preserve these inputs from the task contract:
+
 - task ID;
 - outcome type;
 - baseline commit.
-
 
 The skill must:
 
@@ -205,6 +238,7 @@ Print the absolute report path when finished.
 Handoff documents are created ONLY at context boundaries, not after every task or routine checkpoint.
 
 **Create handoff when:**
+
 - switching chat/session;
 - changing milestone;
 - finishing a long workstream;
@@ -212,11 +246,13 @@ Handoff documents are created ONLY at context boundaries, not after every task o
 - current context window is getting too long.
 
 **Do NOT create handoff when:**
+
 - just committed a small task;
 - report is sufficient and continuing work in the same session;
 - just moving from a minor remediation to audit.
 
 **Handoff content structure (locators and status only; do NOT copy full reports or narrative history):**
+
 - checkpoint (HEAD SHA)
 - branch/upstream state
 - accepted verdict

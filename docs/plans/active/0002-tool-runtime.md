@@ -1,17 +1,19 @@
 # Active Plan 0002: Milestone 3 — Tool Runtime
 
 **Date:** 2026-07-28
-**Status:** ACTIVE — implementation completed; pending independent closure audit
+**Status:** ACTIVE — closure remediation in progress
 **Scope:** Milestone 3 only
 **Target outcome:** Model-requested workspace tools execute through Tool Runtime, policy, approval, execution, transcript, evidence, and checkpoint boundaries, then continue to a final assistant response
 **Architecture authority:** `docs/ARCHITECTURE.md`; ADR 0005, 0006, 0007, 0008, 0009, 0010, 0012, and 0015
 **Roadmap authority:** `docs/IMPLEMENTATION_PLAN.md`, Milestone 3
 **Dependency baseline:** M0–M2 PASS; `docs/plans/active/0001-core-runtime-vertical-slice.md` CLOSED
-**Repository baseline:** `master` at `7263b0c0629d27ba42ad396bb3703d050a3fdf19`
+**Implementation baseline:** `master` at `7263b0c0629d27ba42ad396bb3703d050a3fdf19`
 **Baseline provenance:** remote `master` was inspected at this commit; implementation verified against working tree
-**M3 deterministic:** PASS (34 test files, 223 tests passed)
-**M3 controlled side effect:** PASS (`src/test/controlled-tool-runtime.test.ts`)
-**M3 Gemini live:** NOT RUN — tracked separately, not a deterministic closure substitute
+**Current reviewed checkpoint:** `32ebfbf0cc4155442f2cf1c4bfba2b11ac987e13`
+**M3 deterministic:** PASS at the recorded current test checkpoint
+**M3 controlled side effect:** FAIL — independent closure audit; remediation in progress
+**M3 Gemini live:** NOT RUN — optional/nonblocking under the current plan
+**Overall M3:** FAIL — not eligible for synchronization
 
 ## 1. Outcome
 
@@ -771,6 +773,181 @@ Additional P2:
 - a richer event framework is not a substitute for closing observable M3 behavior.
 
 No unresolved Architecture/ADR blocker is known at planning completion. This plan locks a narrow task-local product slice within accepted boundaries. Promote a P2 only for direct decision violation or production regression.
+
+### Checkpoint-contract rule
+
+The acceptance and evidence matrices in this section are frozen before each
+checkpoint starts.
+
+After execution begins, independent audit may block only for:
+
+- a listed gate failure;
+- a named Architecture/ADR/Implementation Plan violation;
+- a reproducible production/security regression within scope.
+
+Additional hardening is recorded as P2 unless explicitly promoted through a
+control-plane decision.
+
+### M3-R1C — Final closure remediation checkpoint
+
+**Outcome:** Close remaining independently audited M3 gaps.
+**Baseline:** `32ebfbf0cc4155442f2cf1c4bfba2b11ac987e13`
+
+#### M3-R1C-G1 — Policy result fails closed
+
+**Authority:** Active plan §4.4; ADR 0008
+
+**Required behavior:**
+
+- malformed, missing, or unsupported policy decisions fail closed;
+- a side-effecting tool cannot execute from an initial `allow` or malformed
+  result;
+- a side-effecting invocation executes only after exact `require-approval`;
+- approved/rechecked policy constraints are supplied to the execution context;
+- failure occurs before `tool.started`.
+
+**Required proof:**
+
+- focused fake-policy tests for malformed result, missing decision, and initial
+  side-effect `allow`;
+- execution-context assertion proving rechecked constraints reach the executor;
+- no implementation I/O on failure.
+
+#### M3-R1C-G2 — Runtime execution authority is snapshotted
+
+**Authority:** Active plan §§4.5–4.6; ADR 0008
+
+**Required behavior:**
+
+- workspace identity;
+- execution target;
+- runtime sandbox profile;
+- descriptor sandbox requirement;
+- applicable limits and policy evidence
+
+are captured in one host-owned immutable batch/invocation authority snapshot
+before approval/execution.
+
+Caller mutation after admission cannot change approval validation or execution
+context.
+
+**Required proof:**
+
+- deterministic barrier test mutating caller-owned batch context after admission;
+- executor observes only the original snapshot.
+
+#### M3-R1C-G3 — Registry execution authority remains immutable
+
+**Authority:** Active plan §§4.1–4.2; ADR 0012
+
+**Required behavior:**
+
+- public descriptor APIs expose metadata only;
+- internal implementation/renderer authority cannot be replaced after registry
+  freeze;
+- callers cannot obtain a mutable internal registration object.
+
+**Required proof:**
+
+- mutation/replacement attempt after freeze does not alter execution authority;
+- Tool Runtime still invokes the registered implementation through a narrow
+  registry-owned operation.
+
+#### M3-R1C-G4 — Transcript does not fabricate normalized arguments
+
+**Authority:** Active plan §4.10; ADR 0007
+
+**Required behavior:**
+
+- admitted calls use normalized arguments only;
+- unknown/invalid unadmitted requests do not create a normal tool-call entry
+  with invented `{}` arguments;
+- transcript remains atomic and structurally valid;
+- no raw fallback is reintroduced.
+
+**Required proof:**
+
+- unknown and invalid request transcript tests;
+- admitted normalized transcript test;
+- invariant-failure no-partial-commit test.
+
+#### M3-R1C-G5 — Focused checkpoint evidence
+
+**Required proof** is limited to G1–G4 plus:
+
+- typecheck;
+- format check for changed files;
+- lint;
+- focused tool/policy/agent tests;
+- full test suite;
+- `git diff --check`.
+
+Do not require a separate test for every policy field when one parameterized
+drift matrix proves the same binding invariant.
+
+### M3-R1 P2
+
+The following are nonblocking unless future evidence establishes production
+reachability or an authority violation:
+
+- sparse-array strict JSON hardening;
+- own `__proto__` JSON-key hardening;
+- accessor-property strict JSON hardening;
+- one dedicated test for every equivalent approval drift field;
+- additional canonical-serialization edge cases outside the model/provider schema
+  path.
+
+### M3-R2 — Batch admission and bounded parallelism
+
+**Status:** PLANNED — not implemented
+
+**Mapped findings:** M3-F01 (tool profiles/fingerprints), existing M3 gates
+G07, G11, G12, G13.
+
+| Gate    | Required behavior                                                                             |
+| ------- | --------------------------------------------------------------------------------------------- |
+| M3-R2-1 | complete batch admission plan before implementation I/O                                       |
+| M3-R2-2 | all descriptor resolution, validation, normalization, policy and approval before parallel I/O |
+| M3-R2-3 | bounded parallelism honoring `maxConcurrentToolCalls`                                         |
+| M3-R2-4 | only all-read + parallel-safe batches run parallel                                            |
+| M3-R2-5 | mixed, invalid, unknown, approval-gated or side-effecting batches are sequential              |
+| M3-R2-6 | deterministic scheduling and original-order outcomes                                          |
+| M3-R2-7 | one terminal outcome for every requested call                                                 |
+| M3-R2-8 | later unapproved calls never start after failure                                              |
+| M3-R2-9 | event-driven concurrency barriers, no sleep-based proof                                       |
+
+### M3-R3 — Workspace containment and I/O safety
+
+**Status:** PLANNED — not implemented
+
+**Mapped findings:** M3-F02 (model/Harness/context), M3-F04 (Checkpoint
+continue), M3-F06 (no registry/policy/approval/executor).
+
+| Gate    | Required behavior                                                             |
+| ------- | ----------------------------------------------------------------------------- |
+| M3-R3-1 | workspace containment and symlink safety                                      |
+| M3-R3-2 | atomic create/replace and TOCTOU handling                                     |
+| M3-R3-3 | timeout/cancellation controls underlying I/O rather than only racing promises |
+| M3-R3-4 | post-start uncertainty classification                                         |
+| M3-R3-5 | shutdown cancels and drains active runtime/tool work before SQLite close      |
+| M3-R3-6 | cleanup in every terminal path                                                |
+
+### M3-R4 — Lifecycle journal, Gemini continuation, and controlled verification
+
+**Status:** PLANNED — not implemented
+
+**Mapped findings:** M3-F05 (transcript tool-call pairing), M3-F07 (approval
+Gateway method).
+
+| Gate    | Required behavior                                         |
+| ------- | --------------------------------------------------------- |
+| M3-R4-1 | durable pre/post tool lifecycle journal                   |
+| M3-R4-2 | required journal failure semantics                        |
+| M3-R4-3 | Gemini tool-cycle continuation preservation               |
+| M3-R4-4 | controlled verifier matrix                                |
+| M3-R4-5 | deny/expiry/cancel/uncertain/no-replay evidence           |
+| M3-R4-6 | transcript/journal/checkpoint/finalization/usage evidence |
+| M3-R4-7 | temporary workspace/database isolation and cleanup        |
 
 ## 8. Migration Decision
 

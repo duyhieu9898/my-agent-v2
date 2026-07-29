@@ -50,6 +50,49 @@ Promote lasting product or architecture decisions into `docs/decisions/`.
 - Integration or end-to-end proof:
 - Repository-required checks:
 
+## Authority And Gates
+
+- Authority locator:
+- Locked decision:
+- Open decision, if any:
+
+## Acceptance And Evidence Matrix
+
+| Gate | Authority | Production path / risk | Required behavior | Required proof | Classification | Status |
+| ---- | --------- | ---------------------- | ----------------- | -------------- | -------------- | ------ |
+|      |           |                        |                   |                |                |        |
+
+## Checkpoint Contracts
+
+For each checkpoint, record:
+
+- outcome;
+- baseline;
+- scope;
+- non-goals;
+- gate IDs;
+- validation;
+- commit/push requirement;
+- review boundary.
+
+## Audit Calibration
+
+After checkpoint execution begins, audit verifies the frozen gates.
+New hardening is P2 unless it exposes an authority violation or reproducible
+production/security regression within scope.
+
+## Findings And P2
+
+Exact accepted blocking findings:
+
+- Finding.
+
+P2 (nonblocking):
+
+- Item.
+
+Lasting architecture decisions belong in `docs/decisions/`.
+
 ## Result
 
 Complete after implementation. Record the verified outcome, limitations, and

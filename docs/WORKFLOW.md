@@ -123,6 +123,95 @@ Git history, pull-request discussion, test artifacts, screenshots, videos,
 logs, metrics, and plan progress are preferred evidence because they arise from
 the work. Manual descriptions may add context but do not replace observed proof.
 
+## Verification Contract And Audit Calibration
+
+### Checkpoint contract freeze
+
+Before implementation starts for a planned checkpoint, record a closure matrix
+containing:
+
+- gate ID;
+- authority locator;
+- production path or concrete risk;
+- required behavior;
+- exact required proof;
+- classification: blocking or P2;
+- current status.
+
+The matrix may live in:
+
+- the active plan for durable multi-checkpoint work; or
+- the task prompt for a bounded remediation.
+
+A narrow remediation does not require a new durable plan when the accepted
+findings and proof fit in the task contract.
+
+### Blocking audit boundary
+
+An audit finding may block the checkpoint only when it is traceable to at least
+one of:
+
+- Architecture invariant;
+- accepted ADR;
+- Implementation Plan exit condition;
+- active-plan gate;
+- frozen task acceptance condition;
+- reproducible production regression;
+- reproducible security or irreversible-side-effect escape within scope.
+
+The audit must name that locator.
+
+A newly noticed hardening idea without such a locator is classified as:
+
+```text
+QUALITY IMPROVEMENT / P2
+```
+
+It must not silently enlarge the checkpoint contract.
+
+### Evidence classification
+
+Use:
+
+```text
+MISSING CLOSURE EVIDENCE
+```
+
+when required behavior may be implemented but the frozen proof is absent or
+insufficient.
+
+Do not classify missing proof as a decision violation without source evidence of
+the violation.
+
+### Contract changes after execution begins
+
+After a checkpoint starts, the acceptance contract is frozen.
+
+Changing it requires an explicit control-plane decision and must state:
+
+- new authority or production regression;
+- why the original contract is insufficient;
+- whether existing execution remains usable;
+- new blocking/P2 classification.
+
+Do not revise the contract merely because additional edge cases are imaginable.
+
+### Proof granularity
+
+Require enough proof to establish the invariant.
+
+Do not require one separate test for every equivalent field or edge case when:
+
+- one parameterized or structural proof establishes the same invariant; and
+- no distinct production risk requires separate evidence.
+
+### Front-load, execute incrementally
+
+Acceptance matrices for upcoming checkpoints may be prepared together.
+
+Implementation, commit/push, and source review must still proceed one checkpoint
+at a time.
+
 ## Compatibility Control Plane
 
 The Rust CLI and SQLite durable layer remain supported for historical state and

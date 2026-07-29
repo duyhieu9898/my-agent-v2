@@ -1,6 +1,6 @@
 # my-agent-v2 V1 Implementation Plan
 
-**Status:** Ready for execution
+**Status:** Execution in progress — Milestone 3 active
 **Architecture baseline:** `docs/ARCHITECTURE.md` and ADR 0001–0015
 **Active execution plan:** `docs/plans/active/0002-tool-runtime.md`
 **Last updated:** 2026-07-28
@@ -72,7 +72,9 @@ Reserved module roots such as `src/agents/`, `src/context/`, `src/models/`, and 
 | **6 — Curated memory**        | Explicit cross-session memory is searchable and recallable.                                                     | SQLite FTS5, provenance, policy-controlled writes, snapshot recall, and prompt-section evidence pass.                                    |
 | **7 — Control UI**            | Local users can inspect and operate sessions, runs, usage, memory, and artifacts through Gateway APIs.          | UI remains a pure Gateway client and all primary operational surfaces work.                                                              |
 
-Milestones 3–7 remain queued. Their detailed execution plans should be created only when the preceding milestone has validated its dependencies.
+Milestone 3 is active under `docs/plans/active/0002-tool-runtime.md`.
+Milestones 4–7 remain queued. Their detailed execution plans should be created
+only when the preceding milestone has validated its dependencies.
 
 ## 5. Critical path
 
