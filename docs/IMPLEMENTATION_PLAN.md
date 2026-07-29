@@ -72,7 +72,10 @@ Reserved module roots such as `src/agents/`, `src/context/`, `src/models/`, and 
 | **6 — Curated memory**        | Explicit cross-session memory is searchable and recallable.                                                     | SQLite FTS5, provenance, policy-controlled writes, snapshot recall, and prompt-section evidence pass.                                    |
 | **7 — Control UI**            | Local users can inspect and operate sessions, runs, usage, memory, and artifacts through Gateway APIs.          | UI remains a pure Gateway client and all primary operational surfaces work.                                                              |
 
-Milestone 3 is active under `docs/plans/active/0002-tool-runtime.md`.
+Milestone 3 is active under `docs/plans/active/0002-tool-runtime.md`. M3-R2
+closed at `9c9792c3ebe8153c20427a4992c0c32d10d75796`; M3-R3 — Workspace
+containment and I/O safety is the next planned checkpoint. Overall M3 remains
+open under the active plan.
 Milestones 4–7 remain queued. Their detailed execution plans should be created
 only when the preceding milestone has validated its dependencies.
 

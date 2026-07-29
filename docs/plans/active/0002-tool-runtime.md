@@ -9,7 +9,7 @@
 **Dependency baseline:** M0–M2 PASS; `docs/plans/active/0001-core-runtime-vertical-slice.md` CLOSED
 **Implementation baseline:** `master` at `7263b0c0629d27ba42ad396bb3703d050a3fdf19`
 **Baseline provenance:** remote `master` was inspected at this commit; implementation verified against working tree
-**Current reviewed checkpoint:** `c6018c4b3846869769b3d74da5c27fcec621379a`
+**Current reviewed checkpoint:** `9c9792c3ebe8153c20427a4992c0c32d10d75796`
 **M3 deterministic:** PASS at the recorded current test checkpoint
 **M3 controlled side effect:** FAIL — independent closure audit; remediation in progress
 **M3 Gemini live:** NOT RUN — optional/nonblocking under the current plan
@@ -771,7 +771,7 @@ Current accepted independent closure-audit findings:
 
 | Finding  | Classification             | Locked meaning                                                                                                                                                                                              |
 | -------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `M3-F01` | `DECISION VIOLATION`       | batch is not completely planned before implementation I/O; policy/approval occur during execution; concurrency is unbounded or configured capacity is unused; not every request receives a terminal outcome |
+| `M3-F01` | `CLOSED — PASS (R2 scope)` | batch is not completely planned before implementation I/O; policy/approval occur during execution; concurrency is unbounded or configured capacity is unused; not every request receives a terminal outcome |
 | `M3-F02` | `DECISION VIOLATION`       | workspace containment, symlink handling, atomic create/replace, normalization-to-execution binding, or TOCTOU safety is insufficient                                                                        |
 | `M3-F03` | `CLOSED — PASS (R1 scope)` | registry publication, normalized invocation identity, host tool-call identity, or exact approval binding is insufficient                                                                                    |
 | `M3-F04` | `DECISION VIOLATION`       | timeout/cancellation races only the returned promise or does not control underlying I/O; post-start certainty is incorrect                                                                                  |
@@ -856,24 +856,47 @@ reachability or an authority violation:
 ### M3-R2 — Batch admission and bounded parallelism
 
 **Mapped findings:** M3-F01 only.
-**Next execution checkpoint:** M3-R2 — Batch admission and bounded parallelism
-**Status:** PLANNED — NOT RUN
+**Next execution checkpoint:** M3-R3 — Workspace containment and I/O safety
+**Status:** CLOSED — PASS
+**Implementation locators:**
 
-| Gate ID | Authority                                      | Production path / concrete risk                                                                                  | Required behavior                                                         | Exact required proof                                                                                           | Classification | Status            |
-| ------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------- | ----------------- |
-| M3-R2-1 | M3-F01; active plan §4.7; ADR 0008; M3-G11–G13 | Implementation I/O could begin while the batch is only partly admitted.                                          | Complete the batch admission plan before implementation I/O.              | Deterministic fake tools record that no implementation starts before the complete admission plan is available. | blocking       | PLANNED — NOT RUN |
-| M3-R2-2 | M3-F01; active plan §4.7; ADR 0008; M3-G11–G13 | Parallel I/O could begin before descriptor resolution, validation, normalization, policy, or approval completes. | Complete all admission checks before parallel I/O.                        | Deterministic fake tools and barriers prove every admission phase completes before any parallel start.         | blocking       | PLANNED — NOT RUN |
-| M3-R2-3 | M3-F01; active plan §4.7; ADR 0008; M3-G11     | Unbounded work could ignore `maxConcurrentToolCalls`.                                                            | Bound parallel starts by `maxConcurrentToolCalls`.                        | Barrier-controlled fake tools assert the observed peak concurrency equals the configured bound.                | blocking       | PLANNED — NOT RUN |
-| M3-R2-4 | M3-F01; active plan §4.7; ADR 0008; M3-G11     | Unsafe or non-read batches could receive parallel execution.                                                     | Run parallel only when every call is read and parallel-safe.              | Deterministic all-read fake-tool barrier test proves eligible calls overlap within the bound.                  | blocking       | PLANNED — NOT RUN |
-| M3-R2-5 | M3-F01; active plan §4.7; ADR 0008; M3-G12     | Mixed, invalid, unknown, approval-gated, or side-effecting calls could overlap.                                  | Execute those batches wholly sequentially.                                | Barrier fake tools and no-overlap assertions for each fallback class.                                          | blocking       | PLANNED — NOT RUN |
-| M3-R2-6 | M3-F01; active plan §4.7; ADR 0008; M3-G13     | Completion races could make scheduling or returned outcomes nondeterministic.                                    | Schedule deterministically and return outcomes in original request order. | Out-of-order deterministic fake completion with original-order outcome assertions.                             | blocking       | PLANNED — NOT RUN |
-| M3-R2-7 | M3-F01; active plan §4.7; ADR 0008; M3-G11–G13 | Invalid, cancelled, or skipped calls could lack a terminal result.                                               | Give every requested call exactly one terminal outcome.                   | Mixed success/failure/cancellation fake batch asserts one terminal original-order outcome per request.         | blocking       | PLANNED — NOT RUN |
-| M3-R2-8 | M3-F01; active plan §4.7; ADR 0008; M3-G12     | A later unapproved call could start after an earlier failure.                                                    | Do not start later unapproved calls after failure.                        | Sequential fake-tool failure plus start-record assertions proving later unapproved calls never begin.          | blocking       | PLANNED — NOT RUN |
-| M3-R2-9 | M3-F01; active plan §4.7; ADR 0008; M3-G11–G13 | Sleep-based tests could hide a broken concurrency contract.                                                      | Prove concurrency event by event, without timing sleeps.                  | Deterministic fake tools, explicit barriers, start/release events, and original-order assertions.              | blocking       | PLANNED — NOT RUN |
+```text
+M3-R2:
+38e6dedf0b0341f14f97e86aa3ead5d5940ecc48
+
+M3-R2R:
+9c9792c3ebe8153c20427a4992c0c32d10d75796
+```
+
+**Accepted closure verdict:** PASS — eligible for synchronization
+Accepted by user on 2026-07-29
+
+| Gate ID | Authority                                      | Production path / concrete risk                                                                                  | Required behavior                                                         | Exact required proof                                                                                           | Classification | Status | Evidence locator                           |
+| ------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------- | ------ | ------------------------------------------ |
+| M3-R2-1 | M3-F01; active plan §4.7; ADR 0008; M3-G11–G13 | Implementation I/O could begin while the batch is only partly admitted.                                          | Complete the batch admission plan before implementation I/O.              | Deterministic fake tools record that no implementation starts before the complete admission plan is available. | blocking       | PASS   | `9c9792c3ebe8153c20427a4992c0c32d10d75796` |
+| M3-R2-2 | M3-F01; active plan §4.7; ADR 0008; M3-G11–G13 | Parallel I/O could begin before descriptor resolution, validation, normalization, policy, or approval completes. | Complete all admission checks before parallel I/O.                        | Deterministic fake tools and barriers prove every admission phase completes before any parallel start.         | blocking       | PASS   | `9c9792c3ebe8153c20427a4992c0c32d10d75796` |
+| M3-R2-3 | M3-F01; active plan §4.7; ADR 0008; M3-G11     | Unbounded work could ignore `maxConcurrentToolCalls`.                                                            | Bound parallel starts by `maxConcurrentToolCalls`.                        | Barrier-controlled fake tools assert the observed peak concurrency equals the configured bound.                | blocking       | PASS   | `9c9792c3ebe8153c20427a4992c0c32d10d75796` |
+| M3-R2-4 | M3-F01; active plan §4.7; ADR 0008; M3-G11     | Unsafe or non-read batches could receive parallel execution.                                                     | Run parallel only when every call is read and parallel-safe.              | Deterministic all-read fake-tool barrier test proves eligible calls overlap within the bound.                  | blocking       | PASS   | `9c9792c3ebe8153c20427a4992c0c32d10d75796` |
+| M3-R2-5 | M3-F01; active plan §4.7; ADR 0008; M3-G12     | Mixed, invalid, unknown, approval-gated, or side-effecting calls could overlap.                                  | Execute those batches wholly sequentially.                                | Barrier fake tools and no-overlap assertions for each fallback class.                                          | blocking       | PASS   | `9c9792c3ebe8153c20427a4992c0c32d10d75796` |
+| M3-R2-6 | M3-F01; active plan §4.7; ADR 0008; M3-G13     | Completion races could make scheduling or returned outcomes nondeterministic.                                    | Schedule deterministically and return outcomes in original request order. | Out-of-order deterministic fake completion with original-order outcome assertions.                             | blocking       | PASS   | `9c9792c3ebe8153c20427a4992c0c32d10d75796` |
+| M3-R2-7 | M3-F01; active plan §4.7; ADR 0008; M3-G11–G13 | Invalid, cancelled, or skipped calls could lack a terminal result.                                               | Give every requested call exactly one terminal outcome.                   | Mixed success/failure/cancellation fake batch asserts one terminal original-order outcome per request.         | blocking       | PASS   | `9c9792c3ebe8153c20427a4992c0c32d10d75796` |
+| M3-R2-8 | M3-F01; active plan §4.7; ADR 0008; M3-G12     | A later unapproved call could start after an earlier failure.                                                    | Do not start later unapproved calls after failure.                        | Sequential fake-tool failure plus start-record assertions proving later unapproved calls never begin.          | blocking       | PASS   | `9c9792c3ebe8153c20427a4992c0c32d10d75796` |
+| M3-R2-9 | M3-F01; active plan §4.7; ADR 0008; M3-G11–G13 | Sleep-based tests could hide a broken concurrency contract.                                                      | Prove concurrency event by event, without timing sleeps.                  | Deterministic fake tools, explicit barriers, start/release events, and original-order assertions.              | blocking       | PASS   | `9c9792c3ebe8153c20427a4992c0c32d10d75796` |
+
+M3-F01 closure for the accepted R2 scope:
+
+```text
+Closure:
+M3-R2 + M3-R2R
+
+Result:
+PASS at 9c9792c3ebe8153c20427a4992c0c32d10d75796
+```
 
 ### M3-R3 — Workspace containment and I/O safety
 
 **Mapped findings:** M3-F02, M3-F04, and M3-F06 only.
+**Status:** PLANNED — NOT RUN
 **Matrix authority:** active plan §§4.6 and 4.11; ADR 0006; ADR 0008;
 relevant Architecture lifecycle/security invariants.
 
