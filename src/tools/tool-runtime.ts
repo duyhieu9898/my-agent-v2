@@ -662,6 +662,10 @@ export class ToolRuntime {
           "TOOL_IMPLEMENTATION_FAILED",
           `Tool '${req.toolName}' did not complete admission`,
         );
+        this.emitEvent("tool.failed", runId, {
+          toolCallId: req.toolCallId,
+          data: { error: err.message, code: err.code },
+        });
         return {
           toolCallId: req.toolCallId,
           toolName: req.toolName,

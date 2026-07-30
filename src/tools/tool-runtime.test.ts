@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
+import { AppError } from "../core/errors.js";
 import {
   createAgentId,
   createAttemptId,
@@ -30,6 +31,7 @@ import {
   createWorkspaceReadTextTool,
   createWorkspaceWriteTextTool,
 } from "./workspace-tools.js";
+import type { WorkspaceFilesystem } from "./workspace-filesystem.js";
 
 describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () => {
   function createTempWorkspace() {
@@ -2198,6 +2200,59 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       expect((await result).map((outcome) => outcome.toolCallId)).toEqual(
         requests.map((request) => request.toolCallId),
       );
+    });
+  });
+
+  describe("M3-R3-4 certainty evidence", () => {
+    function writeRuntime(filesystem: WorkspaceFilesystem, ids = createSequentialIdFactory()) {
+      const registry = new ToolRegistry();
+      registry.register(createWorkspaceWriteTextTool(filesystem));
+      registry.freeze();
+      const approvals = new ApprovalCoordinator(ids);
+      const runtime = new ToolRuntime(registry, new WorkspacePolicy(filesystem), approvals);
+      const context: ToolBatchContext = {
+        agentId: createAgentId("primary"), sessionKey: createSessionKey("agent:primary:r34"),
+        sessionId: ids.nextSessionId(), runId: ids.nextRunId(), attemptId: ids.nextAttemptId(),
+        modelCallId: ids.nextModelCallId(), workspaceRoot: "/workspace", sandboxProfile: "host-workspace-v1", totalRunToolCalls: 0,
+      };
+      approvals.onRequest((binding) => approvals.resolveApproval(binding.approvalId, context.runId, "allow-once"));
+      return { runtime, context };
+    }
+
+    it("G3 classifies production workspace inspection failure before the possible-effect marker", async () => {
+      const calls: string[] = [];
+      const filesystem: WorkspaceFilesystem = {
+        preflight: async () => undefined, list: async () => [],
+        readTextChunk: async () => ({ text: "", bytesRead: 0, fileSizeBytes: 0 }),
+        inspectTextForWrite: async () => { calls.push("inspect"); throw new AppError("TOOL_IMPLEMENTATION_FAILED", "inspection failed"); },
+        createText: async () => { calls.push("create"); }, writeText: async () => { calls.push("write"); },
+      };
+      const { runtime, context } = writeRuntime(filesystem);
+      const events: string[] = []; runtime.onEvent((event) => events.push(event.type));
+      const [outcome] = await runtime.executeBatch([{ toolCallId: createToolCallId("r34_g3"), modelCallId: context.modelCallId, ordinal: 1, toolName: "workspace.write_text", rawArguments: { path: "a.txt", content: "x", mode: "write" } }], context);
+      expect(calls).toEqual(["inspect"]);
+      expect(outcome).toMatchObject({ terminalState: "failed-before-known-side-effect", error: { code: "TOOL_IMPLEMENTATION_FAILED" } });
+      expect(events.filter((event) => event === "tool.started")).toHaveLength(1);
+      expect(events.filter((event) => event === "tool.failed")).toHaveLength(1);
+      expect(events).not.toContain("tool.completed");
+    });
+
+    it("G4 classifies production workspace mutation failure as uncertain with a safe cause", async () => {
+      let effects = 0;
+      const filesystem: WorkspaceFilesystem = {
+        preflight: async () => undefined, list: async () => [],
+        readTextChunk: async () => ({ text: "", bytesRead: 0, fileSizeBytes: 0 }),
+        inspectTextForWrite: async () => ({ priorState: "none" }),
+        createText: async () => { effects++; throw new AppError("TOOL_IMPLEMENTATION_FAILED", "write failed"); },
+        writeText: async () => { effects++; throw new AppError("TOOL_IMPLEMENTATION_FAILED", "write failed"); },
+      };
+      const { runtime, context } = writeRuntime(filesystem);
+      const events: string[] = []; runtime.onEvent((event) => events.push(event.type));
+      const [outcome] = await runtime.executeBatch([{ toolCallId: createToolCallId("r34_g4"), modelCallId: context.modelCallId, ordinal: 1, toolName: "workspace.write_text", rawArguments: { path: "a.txt", content: "x", mode: "create" } }], context);
+      expect(effects).toBe(1);
+      expect(outcome).toMatchObject({ terminalState: "outcome-uncertain", error: { code: "TOOL_OUTCOME_UNCERTAIN", causeCode: "TOOL_IMPLEMENTATION_FAILED" } });
+      expect(events.filter((event) => event === "tool.failed")).toHaveLength(1);
+      expect(events).not.toContain("tool.completed");
     });
   });
 });
