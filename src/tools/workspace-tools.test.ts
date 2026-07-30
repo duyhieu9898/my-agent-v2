@@ -33,6 +33,8 @@ function context(
     outputLimits: {},
     policyConstraints: {},
     sandboxProfile: "host-workspace-v1",
+    markIoStarted: () => {},
+    markSideEffectPossible: () => {},
     ...(signal ? { signal } : {}),
   };
 }
@@ -177,6 +179,8 @@ describe("workspace tools containment", () => {
 
   it("does not write when previous-state inspection fails", async () => {
     let writeTextCalls = 0;
+    let starts = 0;
+    let sideEffects = 0;
     const filesystem: WorkspaceFilesystem = {
       preflight: async () => undefined,
       list: async () => [],
@@ -197,10 +201,16 @@ describe("workspace tools containment", () => {
     await expect(
       writeTool.execute(
         { path: "target.txt", content: "new", mode: "write" },
-        context("/workspace", "target.txt"),
+        {
+          ...context("/workspace", "target.txt"),
+          markIoStarted: () => starts++,
+          markSideEffectPossible: () => sideEffects++,
+        },
       ),
     ).rejects.toMatchObject({ code: "TOOL_IMPLEMENTATION_FAILED" });
     expect(writeTextCalls).toBe(0);
+    expect(starts).toBe(1);
+    expect(sideEffects).toBe(0);
   });
 
   it("passes one invocation signal through every workspace operation", async () => {
@@ -227,7 +237,12 @@ describe("workspace tools containment", () => {
       },
     };
     const controller = new AbortController();
-    const invocationContext = context("/workspace", "file.txt", controller.signal);
+    const markerCalls: string[] = [];
+    const invocationContext = {
+      ...context("/workspace", "file.txt", controller.signal),
+      markIoStarted: () => markerCalls.push("io"),
+      markSideEffectPossible: () => markerCalls.push("effect"),
+    };
 
     await createWorkspaceListTool(filesystem).execute(
       { path: "file.txt" },
@@ -253,5 +268,6 @@ describe("workspace tools containment", () => {
       controller.signal,
       controller.signal,
     ]);
+    expect(markerCalls).toEqual(["io", "io", "io", "effect", "io", "effect"]);
   });
 });

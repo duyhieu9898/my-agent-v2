@@ -539,7 +539,8 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
         inputLimits: { maxBytes: 1024 },
         outputLimits: { maxBytes: 1024 },
         progressFingerprintVersion: "1.0.0",
-        execute: async () => {
+        execute: async (_args, context) => {
+          context.markIoStarted();
           ioExecuted = true;
           return { done: true };
         },
@@ -1868,6 +1869,7 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
           name: "test.abort_aware_read",
           execute: async (args, context) => {
             receivedSignal = context.signal;
+            context.markIoStarted();
             started();
             await new Promise<void>((resolve, reject) => {
               const onAbort = () => {
@@ -1948,6 +1950,8 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
           concurrencyTrait: "sequential",
           execute: async (args, context) => {
             receivedSignal = context.signal;
+            context.markIoStarted();
+            context.markSideEffectPossible();
             started();
             await new Promise<void>((resolve, reject) => {
               const onAbort = () => {
@@ -2006,7 +2010,10 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       expect(outcomes[0]).toMatchObject({
         ok: false,
         terminalState: "outcome-uncertain",
-        error: { code: "TOOL_CANCELLED" },
+        error: {
+          code: "TOOL_OUTCOME_UNCERTAIN",
+          causeCode: "TOOL_CANCELLED",
+        },
       });
       expect(events.filter((event) => event === "tool.failed")).toHaveLength(1);
       expect(events.filter((event) => event === "tool.cancelled")).toHaveLength(0);

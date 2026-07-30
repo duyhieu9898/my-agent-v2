@@ -38,6 +38,7 @@ export function createWorkspaceListTool(
     outputLimits: { maxBytes: 65536 },
     progressFingerprintVersion: "1.0.0",
     execute: async (args: { path: string; limit?: number }, context) => {
+      context.markIoStarted();
       const entries = await workspaceFilesystem.list(
         context.workspaceRoot,
         context.targetPath,
@@ -89,6 +90,7 @@ export function createWorkspaceReadTextTool(
     ) => {
       const offsetBytes = Math.max(0, args.offsetBytes ?? 0);
       const maxBytes = Math.min(args.maxBytes ?? 65536, 65536);
+      context.markIoStarted();
       const chunk = await workspaceFilesystem.readTextChunk(
         context.workspaceRoot,
         context.targetPath,
@@ -154,12 +156,14 @@ export function createWorkspaceWriteTextTool(
       let previousState: Awaited<
         ReturnType<WorkspaceFilesystem["inspectTextForWrite"]>
       > = { priorState: "none" };
+      context.markIoStarted();
       if (args.mode === "write") {
         previousState = await workspaceFilesystem.inspectTextForWrite(
           context.workspaceRoot,
           context.targetPath,
           context.signal,
         );
+        context.markSideEffectPossible();
         await workspaceFilesystem.writeText(
           context.workspaceRoot,
           context.targetPath,
@@ -167,6 +171,7 @@ export function createWorkspaceWriteTextTool(
           context.signal,
         );
       } else {
+        context.markSideEffectPossible();
         await workspaceFilesystem.createText(
           context.workspaceRoot,
           context.targetPath,

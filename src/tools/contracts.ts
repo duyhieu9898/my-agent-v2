@@ -25,6 +25,9 @@ export interface ToolExecutionContext {
   outputLimits: { maxBytes?: number };
   policyConstraints: Record<string, unknown>;
   sandboxProfile: string;
+  /** Implementation-owned lifecycle markers supplied by Tool Runtime. */
+  markIoStarted(): void;
+  markSideEffectPossible(): void;
 }
 
 export interface ToolDescriptor {
@@ -220,6 +223,7 @@ export interface NormalizedToolOutcome {
   error?: {
     code: string;
     message: string;
+    causeCode?: string;
   };
   durationMs: number;
 }

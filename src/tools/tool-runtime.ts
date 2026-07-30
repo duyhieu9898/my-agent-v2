@@ -498,6 +498,8 @@ export class ToolRuntime {
           outputLimits: item.tool.outputLimits,
           policyConstraints: item.policy.policyConstraints,
           sandboxProfile: admittedBatchContext.sandboxProfile,
+          markIoStarted: () => {},
+          markSideEffectPossible: () => {},
         });
       }
     }
@@ -526,7 +528,8 @@ export class ToolRuntime {
       const { req, tool, normalizedArguments, admissionError } = item;
 
       if (admissionError) {
-        this.emitEvent("tool.failed", runId, {
+        const cancelled = admissionError.code === "TOOL_CANCELLED";
+        this.emitEvent(cancelled ? "tool.cancelled" : "tool.failed", runId, {
           toolCallId: req.toolCallId,
           data: { error: admissionError.message, code: admissionError.code },
         });
@@ -534,7 +537,9 @@ export class ToolRuntime {
           toolCallId: req.toolCallId,
           toolName: req.toolName,
           ordinal: req.ordinal,
-          terminalState: "failed-before-known-side-effect",
+          terminalState: cancelled
+            ? "cancelled-with-no-known-side-effect"
+            : "failed-before-known-side-effect",
           ok: false,
           ...(normalizedArguments ? { normalizedArguments } : {}),
           error: { code: admissionError.code, message: admissionError.message },
@@ -688,19 +693,49 @@ export class ToolRuntime {
         };
       }
 
-      this.emitEvent("tool.started", runId, {
-        toolCallId: req.toolCallId,
-        data: { toolName: req.toolName },
-      });
-
+      type InvocationPhase =
+        | "prepared"
+        | "implementation-io-started"
+        | "side-effect-possible";
+      let phase: InvocationPhase = "prepared";
+      let sealed = false;
+      let markerViolation: AppError | undefined;
       try {
         const timeoutMs = Math.min(tool.timeoutMs, this.limits.toolTimeoutMs);
         const invocationController = new AbortController();
+        const markIoStarted = (): void => {
+          if (sealed || phase !== "prepared") return;
+          phase = "implementation-io-started";
+          this.emitEvent("tool.started", runId, {
+            toolCallId: req.toolCallId,
+            data: { toolName: req.toolName },
+          });
+        };
+        const markSideEffectPossible = (): void => {
+          if (sealed || phase === "side-effect-possible") return;
+          if (tool.effectClassification !== "side-effecting") {
+            markerViolation = new AppError(
+              "TOOL_IMPLEMENTATION_FAILED",
+              `Read-only tool '${req.toolName}' attempted a side effect`,
+            );
+            throw markerViolation;
+          }
+          if (phase !== "implementation-io-started") {
+            markerViolation = new AppError(
+              "TOOL_IMPLEMENTATION_FAILED",
+              `Tool '${req.toolName}' marked a side effect before implementation I/O`,
+            );
+            throw markerViolation;
+          }
+          phase = "side-effect-possible";
+        };
         // AbortSignal mutates internally when its controller aborts, so it
         // must not pass through deepFreeze with the immutable admission data.
         const invocationContext: ToolExecutionContext = {
           ...execContext,
           signal: invocationController.signal,
+          markIoStarted,
+          markSideEffectPossible,
         };
         type InvocationResolution =
           | { kind: "result"; result: unknown }
@@ -715,6 +750,7 @@ export class ToolRuntime {
         const resolveOnce = (resolution: InvocationResolution): void => {
           if (resolved) return;
           resolved = true;
+          sealed = true;
           if (resolution.kind === "cancelled" || resolution.kind === "timeout") {
             invocationController.abort();
           }
@@ -722,19 +758,21 @@ export class ToolRuntime {
         };
         const parentAbortListener = () => resolveOnce({ kind: "cancelled" });
         signal?.addEventListener("abort", parentAbortListener, { once: true });
+        if (signal?.aborted) resolveOnce({ kind: "cancelled" });
         const timer = setTimeout(
           () => resolveOnce({ kind: "timeout" }),
           timeoutMs,
         );
 
         Promise.resolve()
-          .then(() =>
-            this.registry.execute(
+          .then(() => {
+            if (resolved) return undefined;
+            return this.registry.execute(
               req.toolName,
               normalizedArguments,
               invocationContext,
-            ),
-          )
+            );
+          })
           .then(
             (result) => resolveOnce({ kind: "result", result }),
             (error: unknown) => resolveOnce({ kind: "error", error }),
@@ -761,6 +799,8 @@ export class ToolRuntime {
           throw resolution.error;
         }
         const result = resolution.result;
+
+        if (markerViolation) throw markerViolation;
 
         const resVal = this.registry.validateResult(req.toolName, result);
         if (!resVal.ok) {
@@ -793,17 +833,15 @@ export class ToolRuntime {
           durationMs: Date.now() - startTime,
         };
       } catch (err: any) {
+        sealed = true;
         const isCancellation =
           err instanceof AppError && err.code === "TOOL_CANCELLED";
-        const isSideEffecting = tool.effectClassification === "side-effecting";
-        const isUncertain = isSideEffecting;
+        const causeCode =
+          err instanceof AppError ? err.code : "TOOL_IMPLEMENTATION_FAILED";
+        const isUncertain =
+          (phase as InvocationPhase) === "side-effect-possible";
         const isSafelyCancelled = isCancellation && !isUncertain;
-        const code =
-          err instanceof AppError
-            ? err.code
-            : isUncertain
-              ? "TOOL_OUTCOME_UNCERTAIN"
-              : "TOOL_IMPLEMENTATION_FAILED";
+        const code = isUncertain ? "TOOL_OUTCOME_UNCERTAIN" : causeCode;
         const terminalState: TerminalToolState = isUncertain
             ? "outcome-uncertain"
             : isSafelyCancelled
@@ -812,7 +850,7 @@ export class ToolRuntime {
 
         this.emitEvent(isSafelyCancelled ? "tool.cancelled" : "tool.failed", runId, {
           toolCallId: req.toolCallId,
-          data: { error: err.message, code },
+          data: { error: err.message, code, ...(isUncertain ? { causeCode } : {}) },
         });
 
         return {
@@ -822,7 +860,11 @@ export class ToolRuntime {
           terminalState,
           ok: false,
           normalizedArguments,
-          error: { code, message: err.message ?? "Tool execution failed" },
+          error: {
+            code,
+            message: err.message ?? "Tool execution failed",
+            ...(isUncertain ? { causeCode } : {}),
+          },
           durationMs: Date.now() - startTime,
         };
       }
