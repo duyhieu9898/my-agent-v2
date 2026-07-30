@@ -42,6 +42,11 @@ export interface ToolRuntimeConfig {
   maxToolResultBytes?: number;
 }
 
+/** @internal Test-only fault injection. */
+export interface ToolRuntimeTestHooks {
+  forceMissingExecutionContext?(toolCallId: ToolCallId): boolean;
+}
+
 export interface ToolBatchContext {
   agentId: AgentId;
   sessionKey: SessionKey;
@@ -185,6 +190,7 @@ export class ToolRuntime {
     private readonly policy: WorkspacePolicy,
     private readonly approvalCoordinator: ApprovalCoordinator,
     config?: ToolRuntimeConfig,
+    private readonly testHooks?: ToolRuntimeTestHooks,
   ) {
     this.limits = {
       maxConcurrentToolCalls: config?.maxConcurrentToolCalls ?? 4,
@@ -656,7 +662,10 @@ export class ToolRuntime {
         };
       }
 
-      const execContext = item.executionContext;
+      const execContext =
+        this.testHooks?.forceMissingExecutionContext?.(req.toolCallId) === true
+          ? undefined
+          : item.executionContext;
       if (!execContext) {
         const err = new AppError(
           "TOOL_IMPLEMENTATION_FAILED",

@@ -2204,12 +2204,12 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
   });
 
   describe("M3-R3-4 certainty evidence", () => {
-    function writeRuntime(filesystem: WorkspaceFilesystem, ids = createSequentialIdFactory()) {
+    function writeRuntime(filesystem: WorkspaceFilesystem, ids = createSequentialIdFactory(), hooks?: import("./tool-runtime.js").ToolRuntimeTestHooks) {
       const registry = new ToolRegistry();
       registry.register(createWorkspaceWriteTextTool(filesystem));
       registry.freeze();
       const approvals = new ApprovalCoordinator(ids);
-      const runtime = new ToolRuntime(registry, new WorkspacePolicy(filesystem), approvals);
+      const runtime = new ToolRuntime(registry, new WorkspacePolicy(filesystem), approvals, undefined, hooks);
       const context: ToolBatchContext = {
         agentId: createAgentId("primary"), sessionKey: createSessionKey("agent:primary:r34"),
         sessionId: ids.nextSessionId(), runId: ids.nextRunId(), attemptId: ids.nextAttemptId(),
@@ -2218,6 +2218,28 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       approvals.onRequest((binding) => approvals.resolveApproval(binding.approvalId, context.runId, "allow-once"));
       return { runtime, context };
     }
+
+    it("G1 forces only the selected admitted invocation through the missing execution-context fallback", async () => {
+      let executions = 0;
+      const filesystem: WorkspaceFilesystem = {
+        preflight: async () => undefined, list: async () => [],
+        readTextChunk: async () => ({ text: "", bytesRead: 0, fileSizeBytes: 0 }),
+        inspectTextForWrite: async () => ({ priorState: "none" }),
+        createText: async () => { executions++; }, writeText: async () => { executions++; },
+      };
+      const selected = createToolCallId("r34_missing_context");
+      const { runtime, context } = writeRuntime(filesystem, createSequentialIdFactory(), {
+        forceMissingExecutionContext: (toolCallId) => toolCallId === selected,
+      });
+      const events: Array<{ type: string; toolCallId?: string; data?: Record<string, unknown> }> = [];
+      runtime.onEvent((event) => events.push(event));
+      const [outcome] = await runtime.executeBatch([{ toolCallId: selected, modelCallId: context.modelCallId, ordinal: 1, toolName: "workspace.write_text", rawArguments: { path: "a.txt", content: "x", mode: "create" } }], context);
+      expect(executions).toBe(0);
+      expect(outcome).toMatchObject({ terminalState: "failed-before-known-side-effect", normalizedArguments: { path: "a.txt", content: "x", mode: "create" }, error: { code: "TOOL_IMPLEMENTATION_FAILED" } });
+      expect(events.filter((event) => ["tool.failed", "tool.started", "tool.completed", "tool.cancelled"].includes(event.type))).toEqual([
+        expect.objectContaining({ type: "tool.failed", toolCallId: selected, data: expect.objectContaining({ code: "TOOL_IMPLEMENTATION_FAILED" }) }),
+      ]);
+    });
 
     it("G3 classifies production workspace inspection failure before the possible-effect marker", async () => {
       const calls: string[] = [];
