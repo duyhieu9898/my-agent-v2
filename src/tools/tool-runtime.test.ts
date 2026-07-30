@@ -3110,4 +3110,693 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       });
     });
   });
+
+  describe("G2 — Runtime marker authority", () => {
+    it("G2 emits tool.started only on the first accepted I/O marker and ignores duplicate or late markers", async () => {
+      const ids = createSequentialIdFactory();
+      const registry = new ToolRegistry();
+      let startedCount = 0;
+      let capturedContext: ToolExecutionContext | undefined;
+
+      const g2Tool: ToolRegistration<{ path: string }, { ok: boolean }> = {
+        name: "test.g2_marker_tool",
+        descriptorVersion: "1.0.0",
+        owningModule: "test",
+        description: "G2 marker test tool",
+        argumentSchema: Type.Object({ path: Type.String() }),
+        resultSchema: Type.Object({ ok: Type.Boolean() }),
+        effectClassification: "side-effecting",
+        sensitivityClassification: "none",
+        executionTarget: "host",
+        sandboxRequirement: "none",
+        timeoutMs: 30000,
+        cancellationSupport: true,
+        concurrencyTrait: "sequential",
+        idempotencyTrait: false,
+        redactionRules: [],
+        inputLimits: {},
+        outputLimits: {},
+        progressFingerprintVersion: "1.0.0",
+        approvalSummaryRenderer: () => "G2 test tool summary",
+        execute: async (_args, context) => {
+          capturedContext = context;
+          expect(startedCount).toBe(0);
+          context.markIoStarted();
+          expect(startedCount).toBe(1);
+          context.markIoStarted();
+          expect(startedCount).toBe(1);
+          context.markSideEffectPossible();
+          expect(startedCount).toBe(1);
+          return { ok: true };
+        },
+      };
+
+      registry.register(g2Tool);
+      registry.freeze();
+
+      const policy = {
+        evaluateInvocation: async (_t: any, args: any) => ({
+          decision: "require-approval",
+          reason: "approval required",
+          policyProfile: "test",
+          policyVersion: "1.0.0",
+          targetPath: args.path,
+          policyConstraints: {},
+          redactionMetadata: {},
+        }),
+      } as any;
+
+      const approvalCoordinator = new ApprovalCoordinator(ids);
+      const runtime = new ToolRuntime(registry, policy, approvalCoordinator);
+      const batchContext: ToolBatchContext = {
+        agentId: createAgentId("primary"),
+        sessionKey: createSessionKey("agent:primary:g2_batch"),
+        sessionId: ids.nextSessionId(),
+        runId: ids.nextRunId(),
+        attemptId: ids.nextAttemptId(),
+        modelCallId: ids.nextModelCallId(),
+        workspaceRoot: "/workspace",
+        sandboxProfile: "host-workspace-v1",
+        totalRunToolCalls: 0,
+      };
+
+      approvalCoordinator.onRequest((binding) =>
+        approvalCoordinator.resolveApproval(
+          binding.approvalId,
+          batchContext.runId,
+          "allow-once",
+        ),
+      );
+
+      const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+      runtime.onEvent((e) => {
+        if (e.type === "tool.started") {
+          startedCount++;
+        }
+        events.push(e);
+      });
+
+      const outcomes = await runtime.executeBatch(
+        [
+          {
+            toolCallId: createToolCallId("tcall_g2_1"),
+            modelCallId: batchContext.modelCallId,
+            ordinal: 1,
+            toolName: "test.g2_marker_tool",
+            rawArguments: { path: "test.txt" },
+          },
+        ],
+        batchContext,
+      );
+
+      expect(outcomes).toHaveLength(1);
+      const outcome = outcomes[0]!;
+      expect(outcome.terminalState).toBe("completed");
+      expect(outcome.ok).toBe(true);
+
+      const completedEvents = events.filter((e) => e.type === "tool.completed");
+      const failedEvents = events.filter((e) => e.type === "tool.failed");
+      const cancelledEvents = events.filter((e) => e.type === "tool.cancelled");
+
+      expect(completedEvents).toHaveLength(1);
+      expect(failedEvents).toHaveLength(0);
+      expect(cancelledEvents).toHaveLength(0);
+
+      expect(capturedContext).toBeDefined();
+      const eventCountBeforeLate = events.length;
+
+      capturedContext!.markIoStarted();
+      capturedContext!.markSideEffectPossible();
+
+      expect(events.length).toBe(eventCountBeforeLate);
+      expect(startedCount).toBe(1);
+      expect(completedEvents).toHaveLength(1);
+      expect(outcome.terminalState).toBe("completed");
+    });
+  });
+
+  describe("G6 — Timeout followed by late successful resolution", () => {
+    it("G6 seals an uncertain timeout outcome and suppresses late implementation success", async () => {
+      vi.useFakeTimers();
+      try {
+        const ids = createSequentialIdFactory();
+        const registry = new ToolRegistry();
+        let executeCount = 0;
+        let effectCount = 0;
+
+        function createDeferred<T>() {
+          let resolve!: (val: T) => void;
+          let reject!: (err: unknown) => void;
+          const promise = new Promise<T>((res, rej) => {
+            resolve = res;
+            reject = rej;
+          });
+          promise.catch(() => {});
+          return { promise, resolve, reject };
+        }
+
+        const effectReached = createDeferred<void>();
+        const releaseImplementation = createDeferred<{ ok: boolean }>();
+        let capturedContext: ToolExecutionContext | undefined;
+
+        const g6Tool: ToolRegistration<{ path: string }, { ok: boolean }> = {
+          name: "test.g6_timeout_tool",
+          descriptorVersion: "1.0.0",
+          owningModule: "test",
+          description: "G6 timeout test tool",
+          argumentSchema: Type.Object({ path: Type.String() }),
+          resultSchema: Type.Object({ ok: Type.Boolean() }),
+          effectClassification: "side-effecting",
+          sensitivityClassification: "none",
+          executionTarget: "host",
+          sandboxRequirement: "none",
+          timeoutMs: 5000,
+          cancellationSupport: true,
+          concurrencyTrait: "sequential",
+          idempotencyTrait: false,
+          redactionRules: [],
+          inputLimits: {},
+          outputLimits: {},
+          progressFingerprintVersion: "1.0.0",
+          approvalSummaryRenderer: () => "G6 test tool summary",
+          execute: async (_args, context) => {
+            capturedContext = context;
+            executeCount += 1;
+            context.markIoStarted();
+            context.markSideEffectPossible();
+            effectCount += 1;
+            effectReached.resolve();
+            return await releaseImplementation.promise;
+          },
+        };
+
+        registry.register(g6Tool);
+        registry.freeze();
+
+        const policy = {
+          evaluateInvocation: async (_t: any, args: any) => ({
+            decision: "require-approval",
+            reason: "approval required",
+            policyProfile: "test",
+            policyVersion: "1.0.0",
+            targetPath: args.path,
+            policyConstraints: {},
+            redactionMetadata: {},
+          }),
+        } as any;
+
+        const approvalCoordinator = new ApprovalCoordinator(ids);
+        const runtime = new ToolRuntime(registry, policy, approvalCoordinator);
+        const batchContext: ToolBatchContext = {
+          agentId: createAgentId("primary"),
+          sessionKey: createSessionKey("agent:primary:g6_batch"),
+          sessionId: ids.nextSessionId(),
+          runId: ids.nextRunId(),
+          attemptId: ids.nextAttemptId(),
+          modelCallId: ids.nextModelCallId(),
+          workspaceRoot: "/workspace",
+          sandboxProfile: "host-workspace-v1",
+          totalRunToolCalls: 0,
+        };
+
+        approvalCoordinator.onRequest((binding) =>
+          approvalCoordinator.resolveApproval(
+            binding.approvalId,
+            batchContext.runId,
+            "allow-once",
+          ),
+        );
+
+        const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+        runtime.onEvent((e) => events.push(e));
+
+        const batchPromise = runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_g6_1"),
+              modelCallId: batchContext.modelCallId,
+              ordinal: 1,
+              toolName: "test.g6_timeout_tool",
+              rawArguments: { path: "test.txt" },
+            },
+          ],
+          batchContext,
+        );
+
+        await effectReached.promise;
+        await vi.advanceTimersByTimeAsync(5000);
+
+        expect(capturedContext?.signal?.aborted).toBe(true);
+
+        const outcomes = await batchPromise;
+        expect(outcomes).toHaveLength(1);
+        const outcome = outcomes[0]!;
+
+        expect(executeCount).toBe(1);
+        expect(effectCount).toBe(1);
+        expect(outcome.terminalState).toBe("outcome-uncertain");
+        expect(outcome.error?.code).toBe("TOOL_OUTCOME_UNCERTAIN");
+        expect(outcome.error?.causeCode).toBe("TOOL_EXECUTION_TIMEOUT");
+
+        const failedEvents = events.filter((e) => e.type === "tool.failed");
+        const completedEvents = events.filter((e) => e.type === "tool.completed");
+        const cancelledEvents = events.filter((e) => e.type === "tool.cancelled");
+
+        expect(failedEvents).toHaveLength(1);
+        expect(completedEvents).toHaveLength(0);
+        expect(cancelledEvents).toHaveLength(0);
+        expect(failedEvents.length + completedEvents.length + cancelledEvents.length).toBe(1);
+
+        const eventCountBeforeRelease = events.length;
+
+        releaseImplementation.resolve({ ok: true });
+        await vi.runAllTimersAsync();
+
+        expect(executeCount).toBe(1);
+        expect(effectCount).toBe(1);
+        expect(events.length).toBe(eventCountBeforeRelease);
+        expect(events.filter((e) => e.type === "tool.failed")).toHaveLength(1);
+        expect(events.filter((e) => e.type === "tool.completed")).toHaveLength(0);
+        expect(
+          events.filter(
+            (e) =>
+              e.type === "tool.failed" ||
+              e.type === "tool.completed" ||
+              e.type === "tool.cancelled",
+          ),
+        ).toHaveLength(1);
+        expect(outcome.terminalState).toBe("outcome-uncertain");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe("G7 first-terminal-wins race matrix", () => {
+    function createDeferred<T>() {
+      let resolve!: (val: T) => void;
+      let reject!: (err: unknown) => void;
+      const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      promise.catch(() => {});
+      return { promise, resolve, reject };
+    }
+
+    function setupRaceHarness(
+      executeFn: (context: ToolExecutionContext) => Promise<{ ok: boolean }>,
+      options?: { timeoutMs?: number },
+    ) {
+      const ids = createSequentialIdFactory();
+      const registry = new ToolRegistry();
+
+      const readOnlyTool: ToolRegistration<{ path: string }, { ok: boolean }> = {
+        name: "test.g7_race_tool",
+        descriptorVersion: "1.0.0",
+        owningModule: "test",
+        description: "G7 race matrix tool",
+        argumentSchema: Type.Object({ path: Type.String() }),
+        resultSchema: Type.Object({ ok: Type.Boolean() }),
+        effectClassification: "read-only",
+        sensitivityClassification: "none",
+        executionTarget: "host",
+        sandboxRequirement: "none",
+        timeoutMs: options?.timeoutMs ?? 5000,
+        cancellationSupport: true,
+        concurrencyTrait: "parallel-safe",
+        idempotencyTrait: true,
+        redactionRules: [],
+        inputLimits: {},
+        outputLimits: {},
+        progressFingerprintVersion: "1.0.0",
+        approvalSummaryRenderer: () => "G7 race tool summary",
+        execute: async (_args, context) => {
+          context.markIoStarted();
+          return await executeFn(context);
+        },
+      };
+
+      registry.register(readOnlyTool);
+      registry.freeze();
+
+      const policy = {
+        evaluateInvocation: async (_t: any, args: any) => ({
+          decision: "allow",
+          reason: "read-only allowed",
+          policyProfile: "test",
+          policyVersion: "1.0.0",
+          targetPath: args.path,
+          policyConstraints: {},
+          redactionMetadata: {},
+        }),
+      } as any;
+
+      const approvalCoordinator = new ApprovalCoordinator(ids);
+      const runtime = new ToolRuntime(registry, policy, approvalCoordinator);
+      const batchContext: ToolBatchContext = {
+        agentId: createAgentId("primary"),
+        sessionKey: createSessionKey("agent:primary:g7_batch"),
+        sessionId: ids.nextSessionId(),
+        runId: ids.nextRunId(),
+        attemptId: ids.nextAttemptId(),
+        modelCallId: ids.nextModelCallId(),
+        workspaceRoot: "/workspace",
+        sandboxProfile: "host-workspace-v1",
+        totalRunToolCalls: 0,
+      };
+
+      const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
+      runtime.onEvent((e) => events.push(e));
+
+      return { ids, runtime, batchContext, events };
+    }
+
+    function expectTerminalEvents(events: Array<{ type: string }>) {
+      const completed = events.filter((e) => e.type === "tool.completed").length;
+      const failed = events.filter((e) => e.type === "tool.failed").length;
+      const cancelled = events.filter((e) => e.type === "tool.cancelled").length;
+      expect(completed + failed + cancelled).toBe(1);
+      return { completed, failed, cancelled };
+    }
+
+    it("1. result before parent cancellation", async () => {
+      const controller = new AbortController();
+      const harness = setupRaceHarness(async () => ({ ok: true }));
+
+      const outcomes = await harness.runtime.executeBatch(
+        [
+          {
+            toolCallId: createToolCallId("tcall_g7_1"),
+            modelCallId: harness.batchContext.modelCallId,
+            ordinal: 1,
+            toolName: "test.g7_race_tool",
+            rawArguments: { path: "1.txt" },
+          },
+        ],
+        harness.batchContext,
+        controller.signal,
+      );
+
+      expect(outcomes).toHaveLength(1);
+      const outcome = outcomes[0]!;
+      expect(outcome.terminalState).toBe("completed");
+      expect(outcome.ok).toBe(true);
+
+      const terminal = expectTerminalEvents(harness.events);
+      expect(terminal.completed).toBe(1);
+      expect(terminal.failed).toBe(0);
+      expect(terminal.cancelled).toBe(0);
+
+      controller.abort();
+      expectTerminalEvents(harness.events);
+      expect(outcome.terminalState).toBe("completed");
+    });
+
+    it("2. parent cancellation before late result", async () => {
+      const controller = new AbortController();
+      const deferred = createDeferred<{ ok: boolean }>();
+      const harness = setupRaceHarness(async () => await deferred.promise);
+
+      const batchPromise = harness.runtime.executeBatch(
+        [
+          {
+            toolCallId: createToolCallId("tcall_g7_2"),
+            modelCallId: harness.batchContext.modelCallId,
+            ordinal: 1,
+            toolName: "test.g7_race_tool",
+            rawArguments: { path: "2.txt" },
+          },
+        ],
+        harness.batchContext,
+        controller.signal,
+      );
+
+      controller.abort();
+
+      const outcomes = await batchPromise;
+      expect(outcomes).toHaveLength(1);
+      const outcome = outcomes[0]!;
+      expect(outcome.terminalState).toBe("cancelled-with-no-known-side-effect");
+      expect(outcome.ok).toBe(false);
+      expect(outcome.error?.code).toBe("TOOL_CANCELLED");
+
+      const terminal = expectTerminalEvents(harness.events);
+      expect(terminal.cancelled).toBe(1);
+      expect(terminal.completed).toBe(0);
+      expect(terminal.failed).toBe(0);
+
+      deferred.resolve({ ok: true });
+      await Promise.resolve();
+
+      expectTerminalEvents(harness.events);
+      expect(outcome.terminalState).toBe("cancelled-with-no-known-side-effect");
+    });
+
+    it("3. implementation error before parent cancellation", async () => {
+      const controller = new AbortController();
+      const harness = setupRaceHarness(async () => {
+        throw new AppError("TOOL_IMPLEMENTATION_FAILED", "Impl error 3");
+      });
+
+      const outcomes = await harness.runtime.executeBatch(
+        [
+          {
+            toolCallId: createToolCallId("tcall_g7_3"),
+            modelCallId: harness.batchContext.modelCallId,
+            ordinal: 1,
+            toolName: "test.g7_race_tool",
+            rawArguments: { path: "3.txt" },
+          },
+        ],
+        harness.batchContext,
+        controller.signal,
+      );
+
+      expect(outcomes).toHaveLength(1);
+      const outcome = outcomes[0]!;
+      expect(outcome.terminalState).toBe("failed-before-known-side-effect");
+      expect(outcome.ok).toBe(false);
+      expect(outcome.error?.code).toBe("TOOL_IMPLEMENTATION_FAILED");
+
+      const terminal = expectTerminalEvents(harness.events);
+      expect(terminal.failed).toBe(1);
+      expect(terminal.completed).toBe(0);
+      expect(terminal.cancelled).toBe(0);
+
+      controller.abort();
+      expectTerminalEvents(harness.events);
+      expect(outcome.terminalState).toBe("failed-before-known-side-effect");
+    });
+
+    it("4. parent cancellation before late implementation error", async () => {
+      const controller = new AbortController();
+      const deferred = createDeferred<{ ok: boolean }>();
+      const harness = setupRaceHarness(async () => await deferred.promise);
+
+      const batchPromise = harness.runtime.executeBatch(
+        [
+          {
+            toolCallId: createToolCallId("tcall_g7_4"),
+            modelCallId: harness.batchContext.modelCallId,
+            ordinal: 1,
+            toolName: "test.g7_race_tool",
+            rawArguments: { path: "4.txt" },
+          },
+        ],
+        harness.batchContext,
+        controller.signal,
+      );
+
+      controller.abort();
+
+      const outcomes = await batchPromise;
+      expect(outcomes).toHaveLength(1);
+      const outcome = outcomes[0]!;
+      expect(outcome.terminalState).toBe("cancelled-with-no-known-side-effect");
+      expect(outcome.ok).toBe(false);
+      expect(outcome.error?.code).toBe("TOOL_CANCELLED");
+
+      const terminal = expectTerminalEvents(harness.events);
+      expect(terminal.cancelled).toBe(1);
+      expect(terminal.completed).toBe(0);
+      expect(terminal.failed).toBe(0);
+
+      deferred.reject(new Error("Late error 4"));
+      await Promise.resolve();
+
+      expectTerminalEvents(harness.events);
+      expect(outcome.terminalState).toBe("cancelled-with-no-known-side-effect");
+    });
+
+    it("5. result before timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const harness = setupRaceHarness(async () => ({ ok: true }), {
+          timeoutMs: 5000,
+        });
+
+        const outcomes = await harness.runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_g7_5"),
+              modelCallId: harness.batchContext.modelCallId,
+              ordinal: 1,
+              toolName: "test.g7_race_tool",
+              rawArguments: { path: "5.txt" },
+            },
+          ],
+          harness.batchContext,
+        );
+
+        expect(outcomes).toHaveLength(1);
+        const outcome = outcomes[0]!;
+        expect(outcome.terminalState).toBe("completed");
+        expect(outcome.ok).toBe(true);
+
+        const terminal = expectTerminalEvents(harness.events);
+        expect(terminal.completed).toBe(1);
+        expect(terminal.failed).toBe(0);
+
+        await vi.advanceTimersByTimeAsync(5000);
+
+        expectTerminalEvents(harness.events);
+        expect(outcome.terminalState).toBe("completed");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("6. timeout before late result", async () => {
+      vi.useFakeTimers();
+      try {
+        const deferred = createDeferred<{ ok: boolean }>();
+        const harness = setupRaceHarness(async () => await deferred.promise, {
+          timeoutMs: 5000,
+        });
+
+        const batchPromise = harness.runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_g7_6"),
+              modelCallId: harness.batchContext.modelCallId,
+              ordinal: 1,
+              toolName: "test.g7_race_tool",
+              rawArguments: { path: "6.txt" },
+            },
+          ],
+          harness.batchContext,
+        );
+
+        await vi.advanceTimersByTimeAsync(5000);
+
+        const outcomes = await batchPromise;
+        expect(outcomes).toHaveLength(1);
+        const outcome = outcomes[0]!;
+        expect(outcome.terminalState).toBe("failed-before-known-side-effect");
+        expect(outcome.ok).toBe(false);
+        expect(outcome.error?.code).toBe("TOOL_EXECUTION_TIMEOUT");
+
+        const terminal = expectTerminalEvents(harness.events);
+        expect(terminal.failed).toBe(1);
+        expect(terminal.completed).toBe(0);
+
+        deferred.resolve({ ok: true });
+        await vi.runAllTimersAsync();
+
+        expectTerminalEvents(harness.events);
+        expect(outcome.terminalState).toBe("failed-before-known-side-effect");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("7. implementation error before timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const harness = setupRaceHarness(
+          async () => {
+            throw new AppError("TOOL_IMPLEMENTATION_FAILED", "Impl error 7");
+          },
+          { timeoutMs: 5000 },
+        );
+
+        const outcomes = await harness.runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_g7_7"),
+              modelCallId: harness.batchContext.modelCallId,
+              ordinal: 1,
+              toolName: "test.g7_race_tool",
+              rawArguments: { path: "7.txt" },
+            },
+          ],
+          harness.batchContext,
+        );
+
+        expect(outcomes).toHaveLength(1);
+        const outcome = outcomes[0]!;
+        expect(outcome.terminalState).toBe("failed-before-known-side-effect");
+        expect(outcome.ok).toBe(false);
+        expect(outcome.error?.code).toBe("TOOL_IMPLEMENTATION_FAILED");
+
+        const terminal = expectTerminalEvents(harness.events);
+        expect(terminal.failed).toBe(1);
+        expect(terminal.completed).toBe(0);
+
+        await vi.advanceTimersByTimeAsync(5000);
+
+        expectTerminalEvents(harness.events);
+        expect(outcome.terminalState).toBe("failed-before-known-side-effect");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("8. timeout before late implementation error", async () => {
+      vi.useFakeTimers();
+      try {
+        const deferred = createDeferred<{ ok: boolean }>();
+        const harness = setupRaceHarness(async () => await deferred.promise, {
+          timeoutMs: 5000,
+        });
+
+        const batchPromise = harness.runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_g7_8"),
+              modelCallId: harness.batchContext.modelCallId,
+              ordinal: 1,
+              toolName: "test.g7_race_tool",
+              rawArguments: { path: "8.txt" },
+            },
+          ],
+          harness.batchContext,
+        );
+
+        await vi.advanceTimersByTimeAsync(5000);
+
+        const outcomes = await batchPromise;
+        expect(outcomes).toHaveLength(1);
+        const outcome = outcomes[0]!;
+        expect(outcome.terminalState).toBe("failed-before-known-side-effect");
+        expect(outcome.ok).toBe(false);
+        expect(outcome.error?.code).toBe("TOOL_EXECUTION_TIMEOUT");
+
+        const terminal = expectTerminalEvents(harness.events);
+        expect(terminal.failed).toBe(1);
+        expect(terminal.completed).toBe(0);
+
+        deferred.reject(new Error("Late error 8"));
+        await vi.runAllTimersAsync();
+
+        expectTerminalEvents(harness.events);
+        expect(outcome.terminalState).toBe("failed-before-known-side-effect");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });
+
+
