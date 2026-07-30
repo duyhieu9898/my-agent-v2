@@ -774,12 +774,11 @@ Current accepted independent closure-audit findings:
 | `M3-F01` | `CLOSED — PASS (R2 scope)` | batch is not completely planned before implementation I/O; policy/approval occur during execution; concurrency is unbounded or configured capacity is unused; not every request receives a terminal outcome |
 | `M3-F02` | `CLOSED — PASS`            | closure consists of M3-R3-1 workspace containment and strict symlink safety + M3-R3-2 fs-safe-backed atomic create/write publication and TOCTOU handling                                                    |
 | `M3-F03` | `CLOSED — PASS (R1 scope)` | registry publication, normalized invocation identity, host tool-call identity, or exact approval binding is insufficient                                                                                    |
-| `M3-F04` | `DECISION VIOLATION`       | post-start side-effect certainty and uncertain outcomes remain incomplete                                                                                                                                    |
+| `M3-F04` | `CLOSED — PASS`            | post-start side-effect certainty and uncertain outcomes closed by M3-R3-4                                                                                                                                   |
 | `M3-F05` | `DECISION VIOLATION`       | durable tool lifecycle journal or Gemini tool-cycle continuation evidence is incomplete                                                                                                                     |
 | `M3-F06` | `DECISION VIOLATION`       | shutdown does not cancel and drain active runtime/tool work before storage close                                                                                                                            |
 | `M3-F07` | `MISSING CLOSURE EVIDENCE` | controlled verifier does not prove the required denial, expiry, cancellation, uncertainty, replay, transcript, journal, checkpoint, finalization, usage, and cleanup matrix                                 |
 
-M3-F04 remains open and is assigned to M3-R3-4. M3-R3-3 closed abort
 propagation only; it did not close post-start side-effect certainty.
 
 Additional P2:
@@ -917,14 +916,14 @@ PASS at 9c9792c3ebe8153c20427a4992c0c32d10d75796
 **Matrix authority:** active plan §§4.6 and 4.11; ADR 0006; ADR 0008;
 relevant Architecture lifecycle/security invariants.
 
-| Gate ID | Authority                                                                                | Production path / concrete risk                                                              | Required behavior                                                     | Exact required proof                                                                                                          | Classification | Status            |
-| ------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | -------------- | ----------------- |
-| M3-R3-1 | M3-F02; active plan §4.6; ADR 0008; Architecture lifecycle/security invariants           | Paths or symlinks could escape the explicit workspace.                                       | Enforce workspace containment and symlink safety.                     | Temporary filesystem containment, traversal, and symlink-escape tests with no escaped access.                                 | blocking       | PASS              |
-| M3-R3-2 | M3-F02; active plan §4.6; ADR 0008; ADR 0016; Architecture lifecycle/security invariants | Create/write publication could race path changes or expose partial writes.                   | Use fs-safe-backed atomic create/write; retain strict R3A path rules. | Temporary filesystem create/write evidence: no clobber, no partial destination, no implicit parent, and no redirected access. | blocking       | PASS              |
-| M3-R3-3 | M3-F04; active plan §§4.6, 4.11; ADR 0006; ADR 0008                                      | Timeout or cancellation could race only the returned promise while underlying I/O continues. | Propagate abort to underlying I/O and produce one terminal outcome.   | Abort-aware fake I/O proves underlying operation observes cancellation and cannot later complete successfully.                | blocking       | PASS              |
-| M3-R3-4 | M3-F04; active plan §4.11; ADR 0006; ADR 0008                                            | The runtime cannot yet distinguish pre-mutation implementation failure from an outcome after an external effect became possible. | Apply the frozen invocation-certainty, terminal-classification, and no-replay contract below. | M3-R3-4-G1 through M3-R3-4-G9 below. | blocking | PLANNED — NOT RUN |
-| M3-R3-5 | M3-F06; active plan §§4.6, 4.11; ADR 0006; Architecture lifecycle/security invariants    | SQLite could close while runtime/tool work remains active.                                   | Cancel and drain active work before storage close.                    | Ordered shutdown fake records cancellation, drain, cleanup, then storage close; asserts close is last.                        | blocking       | PLANNED — NOT RUN |
-| M3-R3-6 | M3-F02, M3-F04, M3-F06; active plan §4.11; ADR 0006; ADR 0008                            | Success, failure, timeout, or cancellation could leak temporary resources or handles.        | Clean up in every terminal path.                                      | Terminal-path matrix asserts cleanup for success, failure, cancellation, timeout, and uncertain outcomes.                     | blocking       | PLANNED — NOT RUN |
+| Gate ID | Authority                                                                                | Production path / concrete risk                                                                                                  | Required behavior                                                                             | Exact required proof                                                                                                          | Classification | Status            |
+| ------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | -------------- | ----------------- |
+| M3-R3-1 | M3-F02; active plan §4.6; ADR 0008; Architecture lifecycle/security invariants           | Paths or symlinks could escape the explicit workspace.                                                                           | Enforce workspace containment and symlink safety.                                             | Temporary filesystem containment, traversal, and symlink-escape tests with no escaped access.                                 | blocking       | PASS              |
+| M3-R3-2 | M3-F02; active plan §4.6; ADR 0008; ADR 0016; Architecture lifecycle/security invariants | Create/write publication could race path changes or expose partial writes.                                                       | Use fs-safe-backed atomic create/write; retain strict R3A path rules.                         | Temporary filesystem create/write evidence: no clobber, no partial destination, no implicit parent, and no redirected access. | blocking       | PASS              |
+| M3-R3-3 | M3-F04; active plan §§4.6, 4.11; ADR 0006; ADR 0008                                      | Timeout or cancellation could race only the returned promise while underlying I/O continues.                                     | Propagate abort to underlying I/O and produce one terminal outcome.                           | Abort-aware fake I/O proves underlying operation observes cancellation and cannot later complete successfully.                | blocking       | PASS              |
+| M3-R3-4 | M3-F04; active plan §4.11; ADR 0006; ADR 0008                                            | The runtime cannot yet distinguish pre-mutation implementation failure from an outcome after an external effect became possible. | Apply the frozen invocation-certainty, terminal-classification, and no-replay contract below. | M3-R3-4-G1 through M3-R3-4-G9 below.                                                                                          | blocking       | CLOSED — PASS     |
+| M3-R3-5 | M3-F06; active plan §§4.6, 4.11; ADR 0006; Architecture lifecycle/security invariants    | SQLite could close while runtime/tool work remains active.                                                                       | Cancel and drain active work before storage close.                                            | Ordered shutdown fake records cancellation, drain, cleanup, then storage close; asserts close is last.                        | blocking       | PLANNED — NOT RUN |
+| M3-R3-6 | M3-F02, M3-F04, M3-F06; active plan §4.11; ADR 0006; ADR 0008                            | Success, failure, timeout, or cancellation could leak temporary resources or handles.                                            | Clean up in every terminal path.                                                              | Terminal-path matrix asserts cleanup for success, failure, cancellation, timeout, and uncertain outcomes.                     | blocking       | PLANNED — NOT RUN |
 
 M3-R3A closure for M3-R3-1:
 
@@ -1008,7 +1007,10 @@ M3-R3C-F01: CLOSED — PASS
 
 ### M3-R3-4 — Post-start side-effect certainty and uncertain outcomes
 
-**Status:** PLANNED — NOT RUN
+**Status:** CLOSED — PASS
+**Accepted by user:** 2026-07-30
+**Closure checkpoint:** `cfc5717e00d8b9339a9788b72267c257acd69672`
+**Accepted closure verdict:** PASS — eligible for synchronization
 **Mapped finding:** M3-F04 only.
 
 #### Outcome and current finding
@@ -1076,7 +1078,7 @@ side-effect-started event is required for M3-R3-4.
    failures: `terminalState = failed-before-known-side-effect`, event =
    `tool.failed`, code = original normalized safe code.
 2. Explicit cancellation before side-effect-possible: `terminalState =
-   cancelled-with-no-known-side-effect`, event = `tool.cancelled`, code =
+cancelled-with-no-known-side-effect`, event = `tool.cancelled`, code =
    `TOOL_CANCELLED`.
 3. Timeout or implementation failure before side-effect-possible:
    `terminalState = failed-before-known-side-effect`, event = `tool.failed`,
@@ -1085,7 +1087,7 @@ side-effect-started event is required for M3-R3-4.
 4. Validated successful result: `terminalState = completed`, event =
    `tool.completed`.
 5. Any non-success after side-effect-possible: `terminalState =
-   outcome-uncertain`, event = `tool.failed`, code = `TOOL_OUTCOME_UNCERTAIN`,
+outcome-uncertain`, event = `tool.failed`, code = `TOOL_OUTCOME_UNCERTAIN`,
    `causeCode` = original normalized cause when safely representable.
 6. First terminal resolution wins. Late completion, error, cancellation,
    timeout, marker invocation, or event emission cannot create a second terminal
@@ -1139,11 +1141,12 @@ M3-R3-6.
 
 #### Frozen acceptance and evidence matrix
 
-All gates below are blocking and **PLANNED — NOT RUN**.
+All gates below are CLOSED — PASS.
 
 ##### M3-R3-4-G1 — Pre-start certainty
 
-**Status:** PLANNED — NOT RUN
+**Status:** PASS
+**Evidence locator:** [tool-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/tools/tool-runtime.test.ts)
 
 **Authority:** ADR 0008 timeout/cancellation taxonomy; active plan §§4.5 and 4.11.
 
@@ -1162,7 +1165,8 @@ correct terminal event family.
 
 ##### M3-R3-4-G2 — Authoritative implementation start
 
-**Status:** PLANNED — NOT RUN
+**Status:** PASS
+**Evidence locator:** [tool-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/tools/tool-runtime.test.ts#L3114-L3236)
 
 **Authority:** ADR 0008 execution lifecycle; active plan §4.11.
 
@@ -1180,7 +1184,8 @@ use the start marker before their first filesystem I/O.
 
 ##### M3-R3-4-G3 — Post-start pre-effect failure
 
-**Status:** PLANNED — NOT RUN
+**Status:** PASS
+**Evidence locator:** [tool-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/tools/tool-runtime.test.ts)
 
 **Authority:** ADR 0008 certainty taxonomy; M3-F04.
 
@@ -1200,7 +1205,8 @@ failure; event = `tool.failed`.
 
 ##### M3-R3-4-G4 — Post-effect implementation failure
 
-**Status:** PLANNED — NOT RUN
+**Status:** PASS
+**Evidence locator:** [tool-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/tools/tool-runtime.test.ts)
 
 **Authority:** ADR 0008 uncertain outcomes; M3-F04; active plan §4.11.
 
@@ -1219,7 +1225,8 @@ classification path.
 
 ##### M3-R3-4-G5 — Post-effect cancellation
 
-**Status:** PLANNED — NOT RUN
+**Status:** PASS
+**Evidence locator:** [tool-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/tools/tool-runtime.test.ts)
 
 **Authority:** ADR 0006 cancellation; ADR 0008 uncertain outcomes; accepted
 M3-R3-3.
@@ -1239,7 +1246,8 @@ outcome-uncertain; primary code is `TOOL_OUTCOME_UNCERTAIN`; `causeCode` is
 
 ##### M3-R3-4-G6 — Post-effect timeout
 
-**Status:** PLANNED — NOT RUN
+**Status:** PASS
+**Evidence locator:** [tool-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/tools/tool-runtime.test.ts#L3238-L3388)
 
 **Authority:** ADR 0008 timeout and uncertainty; active plan §4.11.
 
@@ -1256,7 +1264,8 @@ TOOL_OUTCOME_UNCERTAIN`; `error.causeCode = TOOL_EXECUTION_TIMEOUT`; one
 
 ##### M3-R3-4-G7 — Exactly one terminal outcome
 
-**Status:** PLANNED — NOT RUN
+**Status:** PASS
+**Evidence locator:** [tool-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/tools/tool-runtime.test.ts#L3390-L3799)
 
 **Authority:** ADR 0006 exactly-once terminalization; ADR 0008 one terminal
 result; accepted M3-R3-3.
@@ -1275,7 +1284,8 @@ event emitter.
 
 ##### M3-R3-4-G8 — No automatic replay
 
-**Status:** PLANNED — NOT RUN
+**Status:** PASS
+**Evidence locator:** [agent-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/agents/agent-runtime.test.ts#L2740-L2882)
 
 **Authority:** ADR 0006 Checkpoint authority; ADR 0008 replay prohibition;
 active plan §4.9.
@@ -1295,7 +1305,8 @@ tool-cycle path.
 
 ##### M3-R3-4-G9 — Production composition
 
-**Status:** PLANNED — NOT RUN
+**Status:** PASS
+**Evidence locator:** [create-app.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/bootstrap/create-app.test.ts) & [create-app.ts](file:///home/hieund/Downloads/my-agent-v2/src/bootstrap/create-app.ts)
 
 **Authority:** Architecture §§13–14; ADR 0008; Implementation Plan Milestone 3.
 
@@ -1357,7 +1368,7 @@ M3-F02: CLOSED — PASS for M3-R3-1 workspace containment and strict symlink saf
 
 - M3-R3-2 fs-safe-backed atomic create/write publication and TOCTOU handling.
 
-**Next execution checkpoint:** M3-R3-4 — post-start side-effect certainty and uncertain outcomes
+**Next execution checkpoint:** M3-R3-5 — shutdown cancel/drain before storage close
 
 ### M3-R4 — Lifecycle journal, Gemini continuation, and controlled verification
 
