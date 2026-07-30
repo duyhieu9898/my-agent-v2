@@ -774,10 +774,13 @@ Current accepted independent closure-audit findings:
 | `M3-F01` | `CLOSED — PASS (R2 scope)` | batch is not completely planned before implementation I/O; policy/approval occur during execution; concurrency is unbounded or configured capacity is unused; not every request receives a terminal outcome |
 | `M3-F02` | `CLOSED — PASS`            | closure consists of M3-R3-1 workspace containment and strict symlink safety + M3-R3-2 fs-safe-backed atomic create/write publication and TOCTOU handling                                                    |
 | `M3-F03` | `CLOSED — PASS (R1 scope)` | registry publication, normalized invocation identity, host tool-call identity, or exact approval binding is insufficient                                                                                    |
-| `M3-F04` | `OPEN — M3-R3-4`           | post-start side-effect certainty and uncertain outcomes remain incomplete                                                                                                                                    |
+| `M3-F04` | `DECISION VIOLATION`       | post-start side-effect certainty and uncertain outcomes remain incomplete                                                                                                                                    |
 | `M3-F05` | `DECISION VIOLATION`       | durable tool lifecycle journal or Gemini tool-cycle continuation evidence is incomplete                                                                                                                     |
 | `M3-F06` | `DECISION VIOLATION`       | shutdown does not cancel and drain active runtime/tool work before storage close                                                                                                                            |
 | `M3-F07` | `MISSING CLOSURE EVIDENCE` | controlled verifier does not prove the required denial, expiry, cancellation, uncertainty, replay, transcript, journal, checkpoint, finalization, usage, and cleanup matrix                                 |
+
+M3-F04 remains open and is assigned to M3-R3-4. M3-R3-3 closed abort
+propagation only; it did not close post-start side-effect certainty.
 
 Additional P2:
 
