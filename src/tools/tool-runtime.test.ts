@@ -3410,6 +3410,8 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
     ) {
       const ids = createSequentialIdFactory();
       const registry = new ToolRegistry();
+      let executeCount = 0;
+      const implementationEntered = createDeferred<void>();
 
       const readOnlyTool: ToolRegistration<{ path: string }, { ok: boolean }> = {
         name: "test.g7_race_tool",
@@ -3432,7 +3434,9 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
         progressFingerprintVersion: "1.0.0",
         approvalSummaryRenderer: () => "G7 race tool summary",
         execute: async (_args, context) => {
+          executeCount += 1;
           context.markIoStarted();
+          implementationEntered.resolve();
           return await executeFn(context);
         },
       };
@@ -3469,7 +3473,14 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       const events: Array<{ type: string; data?: Record<string, unknown> }> = [];
       runtime.onEvent((e) => events.push(e));
 
-      return { ids, runtime, batchContext, events };
+      return {
+        ids,
+        runtime,
+        batchContext,
+        events,
+        implementationEntered,
+        getExecuteCount: () => executeCount,
+      };
     }
 
     function expectTerminalEvents(events: Array<{ type: string }>) {
@@ -3532,6 +3543,10 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
         controller.signal,
       );
 
+      await harness.implementationEntered.promise;
+      expect(harness.getExecuteCount()).toBe(1);
+      expect(harness.events.filter((e) => e.type === "tool.started")).toHaveLength(1);
+
       controller.abort();
 
       const outcomes = await batchPromise;
@@ -3546,9 +3561,11 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       expect(terminal.completed).toBe(0);
       expect(terminal.failed).toBe(0);
 
+      const eventCountBeforeLate = harness.events.length;
       deferred.resolve({ ok: true });
       await Promise.resolve();
 
+      expect(harness.events.length).toBe(eventCountBeforeLate);
       expectTerminalEvents(harness.events);
       expect(outcome.terminalState).toBe("cancelled-with-no-known-side-effect");
     });
@@ -3608,6 +3625,10 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
         controller.signal,
       );
 
+      await harness.implementationEntered.promise;
+      expect(harness.getExecuteCount()).toBe(1);
+      expect(harness.events.filter((e) => e.type === "tool.started")).toHaveLength(1);
+
       controller.abort();
 
       const outcomes = await batchPromise;
@@ -3622,9 +3643,11 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       expect(terminal.completed).toBe(0);
       expect(terminal.failed).toBe(0);
 
+      const eventCountBeforeLate = harness.events.length;
       deferred.reject(new Error("Late error 4"));
       await Promise.resolve();
 
+      expect(harness.events.length).toBe(eventCountBeforeLate);
       expectTerminalEvents(harness.events);
       expect(outcome.terminalState).toBe("cancelled-with-no-known-side-effect");
     });
@@ -3688,6 +3711,10 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
           harness.batchContext,
         );
 
+        await harness.implementationEntered.promise;
+        expect(harness.getExecuteCount()).toBe(1);
+        expect(harness.events.filter((e) => e.type === "tool.started")).toHaveLength(1);
+
         await vi.advanceTimersByTimeAsync(5000);
 
         const outcomes = await batchPromise;
@@ -3701,9 +3728,11 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
         expect(terminal.failed).toBe(1);
         expect(terminal.completed).toBe(0);
 
+        const eventCountBeforeLate = harness.events.length;
         deferred.resolve({ ok: true });
         await vi.runAllTimersAsync();
 
+        expect(harness.events.length).toBe(eventCountBeforeLate);
         expectTerminalEvents(harness.events);
         expect(outcome.terminalState).toBe("failed-before-known-side-effect");
       } finally {
@@ -3774,6 +3803,10 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
           harness.batchContext,
         );
 
+        await harness.implementationEntered.promise;
+        expect(harness.getExecuteCount()).toBe(1);
+        expect(harness.events.filter((e) => e.type === "tool.started")).toHaveLength(1);
+
         await vi.advanceTimersByTimeAsync(5000);
 
         const outcomes = await batchPromise;
@@ -3787,9 +3820,11 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
         expect(terminal.failed).toBe(1);
         expect(terminal.completed).toBe(0);
 
+        const eventCountBeforeLate = harness.events.length;
         deferred.reject(new Error("Late error 8"));
         await vi.runAllTimersAsync();
 
+        expect(harness.events.length).toBe(eventCountBeforeLate);
         expectTerminalEvents(harness.events);
         expect(outcome.terminalState).toBe("failed-before-known-side-effect");
       } finally {
