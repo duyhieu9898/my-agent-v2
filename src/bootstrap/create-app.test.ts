@@ -8,7 +8,10 @@ import type { AppConfig } from "../config/config.schema.js";
 import { SqliteRunStore } from "../agents/run-store.js";
 import { openDatabase } from "../storage/database.js";
 import { migrateDatabase } from "../storage/migrate.js";
-import { createApp } from "./create-app.js";
+import {
+  createApp,
+  type CreateAppCompositionObservation,
+} from "./create-app.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -19,6 +22,115 @@ afterEach(() => {
 });
 
 describe("createApp", () => {
+  it("G9 observes the production tool composition without exposing a direct execution bypass", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "my-agent-app-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "agent.sqlite");
+    const config: AppConfig = {
+      nodeEnv: "test",
+      logLevel: "error",
+      dataDir: directory,
+      workspaceDir: join(directory, "workspace"),
+      database: { path: databasePath },
+      gateway: { host: "127.0.0.1", port: 0 },
+      runtime: {
+        perSessionQueueCapacity: 16,
+        maxConcurrentModelCalls: 4,
+        runTimeoutMs: 60_000,
+      },
+      agent: {
+        defaultId: "primary",
+        model: {
+          providerId: "gemini-developer",
+          modelId: "gemini-3.5-flash",
+          geminiApiKeyEnvironmentVariable: "GEMINI_API_KEY",
+          contextTokenBudget: 12000,
+        },
+      },
+      usage: {
+        captureProfile: "production",
+        maxOutputTokens: 8_192,
+        thinkingTokens: 0,
+        reservationSafetyMarginTokens: 256,
+        priceCatalog: [],
+        capPolicies: [],
+      },
+    };
+
+    const observations: CreateAppCompositionObservation[] = [];
+    const app = createApp(config, {
+      testHooks: {
+        observeComposition: (observation) => {
+          observations.push(observation);
+        },
+      },
+    });
+
+    expect(observations).toHaveLength(1);
+    const observation = observations[0]!;
+
+    expect(observation.workspaceFilesystemKind).toBe(
+      "FsSafeWorkspaceFilesystem",
+    );
+
+    expect(observation.registeredToolNames).toEqual([
+      "workspace.list",
+      "workspace.read_text",
+      "workspace.write_text",
+    ]);
+
+    expect(typeof observation.registryFingerprint).toBe("string");
+    expect(observation.registryFingerprint.length).toBeGreaterThan(0);
+    expect(observation.registryFingerprint).not.toBe("placeholder");
+
+    expect(typeof observation.policyFingerprint).toBe("string");
+    expect(observation.policyFingerprint.length).toBeGreaterThan(0);
+    expect(observation.policyFingerprint).not.toBe("placeholder");
+
+    expect(observation.toolRuntimeUsesRegistry).toBe(true);
+    expect(observation.toolRuntimeUsesPolicy).toBe(true);
+    expect(observation.toolRuntimeUsesApprovalCoordinator).toBe(true);
+
+    expect(observation.agentRuntimeUsesToolRuntime).toBe(true);
+    expect(observation.agentRuntimeUsesRegistry).toBe(true);
+    expect(observation.agentRuntimeUsesPolicy).toBe(true);
+
+    const forbiddenBypassKeys = [
+      "workspaceFilesystem",
+      "workspaceTools",
+      "toolRegistry",
+      "workspacePolicy",
+      "approvalCoordinator",
+      "toolRuntime",
+      "executeTool",
+      "executeBatch",
+    ];
+
+    for (const key of forbiddenBypassKeys) {
+      expect(observation.exposedAppKeys).not.toContain(key);
+      expect(app).not.toHaveProperty(key);
+    }
+
+    expect(Object.isFrozen(observation)).toBe(true);
+    expect(Object.isFrozen(observation.registeredToolNames)).toBe(true);
+    expect(Object.isFrozen(observation.exposedAppKeys)).toBe(true);
+    expect(() =>
+      (observation.registeredToolNames as string[]).push("workspace.delete"),
+    ).toThrow();
+    expect(() =>
+      (observation.exposedAppKeys as string[]).push("executeTool"),
+    ).toThrow();
+
+    await app.start();
+    expect(existsSync(databasePath)).toBe(true);
+    await app.stop();
+
+    const normalApp = createApp(config);
+    await normalApp.start();
+    expect(existsSync(databasePath)).toBe(true);
+    await normalApp.stop();
+  });
+
   it("creates and closes the configured database lifecycle", async () => {
     const directory = mkdtempSync(join(tmpdir(), "my-agent-app-"));
     temporaryDirectories.push(directory);

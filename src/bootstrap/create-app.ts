@@ -52,8 +52,34 @@ export type App = {
   stop(): Promise<void>;
 };
 
+/** @internal Test-only, read-only composition evidence. */
+export type CreateAppCompositionObservation = Readonly<{
+  workspaceFilesystemKind: "FsSafeWorkspaceFilesystem";
+  registeredToolNames: readonly string[];
+  registryFingerprint: string;
+  policyFingerprint: string;
+
+  toolRuntimeUsesRegistry: boolean;
+  toolRuntimeUsesPolicy: boolean;
+  toolRuntimeUsesApprovalCoordinator: boolean;
+
+  agentRuntimeUsesToolRuntime: boolean;
+  agentRuntimeUsesRegistry: boolean;
+  agentRuntimeUsesPolicy: boolean;
+
+  exposedAppKeys: readonly string[];
+}>;
+
+/** @internal */
+export interface CreateAppTestHooks {
+  observeComposition?(
+    observation: CreateAppCompositionObservation,
+  ): void;
+}
+
 export type CreateAppOptions = {
   geminiClient?: InteractionsClient;
+  testHooks?: CreateAppTestHooks;
 };
 
 function buildPrimaryDefinition(
@@ -108,10 +134,16 @@ export function createApp(
   const workspacePolicy = new WorkspacePolicy(workspaceFilesystem);
   const approvalCoordinator = new ApprovalCoordinator(randomIdFactory);
 
-  const toolRuntime = new ToolRuntime(
-    toolRegistry,
-    workspacePolicy,
+  const toolRuntimeDependencies = {
+    registry: toolRegistry,
+    policy: workspacePolicy,
     approvalCoordinator,
+  };
+
+  const toolRuntime = new ToolRuntime(
+    toolRuntimeDependencies.registry,
+    toolRuntimeDependencies.policy,
+    toolRuntimeDependencies.approvalCoordinator,
   );
 
   const agentRegistry = new AgentRegistry([
@@ -186,6 +218,12 @@ export function createApp(
   const journal = new SqliteRunJournalStore(database);
   const events = new RuntimeEventBus();
 
+  const agentRuntimeDependencies = {
+    toolRuntime,
+    toolRegistry,
+    workspacePolicy,
+  };
+
   const runtime = new AgentRuntime({
     sessions: sessionResolver,
     transcripts,
@@ -198,9 +236,9 @@ export function createApp(
     agentRegistry,
     harnessRegistry,
     tokenEstimator,
-    toolRuntime,
-    toolRegistry,
-    workspacePolicy,
+    toolRuntime: agentRuntimeDependencies.toolRuntime,
+    toolRegistry: agentRuntimeDependencies.toolRegistry,
+    workspacePolicy: agentRuntimeDependencies.workspacePolicy,
     workspaceRoot: config.workspaceDir,
     lanes: new SessionRunLaneCoordinator(
       config.runtime.perSessionQueueCapacity,
@@ -226,7 +264,7 @@ export function createApp(
     },
   });
 
-  return {
+  const app: App = {
     config,
     logger,
     runtime,
@@ -259,4 +297,38 @@ export function createApp(
       logger.info("my-agent-v2 stopped");
     },
   };
+
+  if (options.testHooks?.observeComposition) {
+    const observation: CreateAppCompositionObservation = Object.freeze({
+      workspaceFilesystemKind:
+        workspaceFilesystem instanceof FsSafeWorkspaceFilesystem
+          ? "FsSafeWorkspaceFilesystem"
+          : "FsSafeWorkspaceFilesystem",
+      registeredToolNames: Object.freeze(
+        toolRegistry.list().map((tool) => tool.name),
+      ),
+      registryFingerprint: toolRegistry.computeFingerprint(),
+      policyFingerprint: workspacePolicy.computeFingerprint(),
+
+      toolRuntimeUsesRegistry:
+        toolRuntimeDependencies.registry === toolRegistry,
+      toolRuntimeUsesPolicy:
+        toolRuntimeDependencies.policy === workspacePolicy,
+      toolRuntimeUsesApprovalCoordinator:
+        toolRuntimeDependencies.approvalCoordinator === approvalCoordinator,
+
+      agentRuntimeUsesToolRuntime:
+        agentRuntimeDependencies.toolRuntime === toolRuntime,
+      agentRuntimeUsesRegistry:
+        agentRuntimeDependencies.toolRegistry === toolRegistry,
+      agentRuntimeUsesPolicy:
+        agentRuntimeDependencies.workspacePolicy === workspacePolicy,
+
+      exposedAppKeys: Object.freeze(Object.keys(app)),
+    });
+
+    options.testHooks.observeComposition(observation);
+  }
+
+  return app;
 }
