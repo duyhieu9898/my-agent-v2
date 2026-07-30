@@ -2741,6 +2741,7 @@ describe("AgentRuntime", () => {
       const sessions = new SessionResolver(new SqliteSessionStore(database));
       const transcripts = new InMemoryTranscriptStore();
       const events = new RuntimeEventBus();
+      const trace = createLifecycleTrace(events);
       const ids = createSequentialIdFactory();
 
       let modelProviderCalls = 0;
@@ -2753,7 +2754,6 @@ describe("AgentRuntime", () => {
         readTextChunk: async () => ({ text: "", bytesRead: 0, fileSizeBytes: 0 }),
         inspectTextForWrite: async () => ({ priorState: "none" }),
         createText: async () => {
-          console.log("DEBUG_CREATE_TEXT_CALLED");
           toolExecutions++;
           toolEffects++;
           throw new AppError("TOOL_IMPLEMENTATION_FAILED", "side effect failure");
@@ -2818,6 +2818,7 @@ describe("AgentRuntime", () => {
         toolRegistry: registry,
         workspacePolicy: policy,
         workspaceRoot: process.cwd(),
+        lifecycleProbe: trace.probe,
       });
 
       const run = await runtime.admit({
@@ -2836,15 +2837,52 @@ describe("AgentRuntime", () => {
       expect(toolExecutions).toBe(1);
       expect(toolEffects).toBe(1);
 
-      const terminalEvents = events
+      const runSteps = trace.steps
+        .filter((entry) => entry.runId === run.runId)
+        .map((entry) => entry.step);
+      const stepCount = (step: string) =>
+        runSteps.filter((val) => val === step).length;
+
+      expect(stepCount("checkpoint.decision.fail")).toBe(1);
+      expect(stepCount("checkpoint.decision.complete")).toBe(0);
+      expect(stepCount("checkpoint.decision.cancel")).toBe(0);
+
+      const runEvents = events
         .snapshot()
-        .filter(
-          (e) =>
-            e.runId === run.runId &&
-            (e.eventName === "run.completed" ||
-              e.eventName === "run.failed" ||
-              e.eventName === "run.cancelled"),
-        );
+        .filter((e) => e.runId === run.runId);
+      const eventCount = (eventName: string) =>
+        runEvents.filter((e) => e.eventName === eventName).length;
+
+      expect(eventCount("tool.requested")).toBe(1);
+      expect(eventCount("tool.started")).toBe(1);
+      expect(eventCount("tool.failed")).toBe(1);
+      expect(eventCount("tool.completed")).toBe(0);
+      expect(eventCount("tool.cancelled")).toBe(0);
+
+      expect(eventCount("attempt.started")).toBe(1);
+
+      const attemptRows = database
+        .prepare(
+          "SELECT attempt_id, run_id, status, terminal_code FROM attempts WHERE run_id = ?",
+        )
+        .all(run.runId) as Array<{
+        attempt_id: string;
+        run_id: string;
+        status: string;
+        terminal_code: string;
+      }>;
+
+      expect(attemptRows).toHaveLength(1);
+      expect(attemptRows[0]!.run_id).toBe(run.runId);
+      expect(attemptRows[0]!.status).toBe("failed");
+      expect(attemptRows[0]!.terminal_code).toBe("TOOL_OUTCOME_UNCERTAIN");
+
+      const terminalEvents = runEvents.filter(
+        (e) =>
+          e.eventName === "run.completed" ||
+          e.eventName === "run.failed" ||
+          e.eventName === "run.cancelled",
+      );
       expect(terminalEvents).toHaveLength(1);
     });
   });
