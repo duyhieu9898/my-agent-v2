@@ -11,6 +11,9 @@ export type WorkspaceTextChunk = {
   fileSizeBytes: number;
 };
 
+export type WorkspaceWritePriorState =
+  { priorState: "none" } | { priorState: "existed"; previousHash: string };
+
 /** Project-owned workspace I/O boundary shared by policy and tool execution. */
 export interface WorkspaceFilesystem {
   preflight(
@@ -25,6 +28,10 @@ export interface WorkspaceFilesystem {
     offsetBytes: number,
     maxBytes: number,
   ): Promise<WorkspaceTextChunk>;
+  inspectTextForWrite(
+    workspaceRoot: string,
+    targetPath: string,
+  ): Promise<WorkspaceWritePriorState>;
   createText(
     workspaceRoot: string,
     targetPath: string,

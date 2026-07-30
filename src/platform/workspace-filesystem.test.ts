@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { getFsSafeNativeConfig } from "./fs-safe.js";
@@ -61,6 +62,23 @@ describe("FsSafeWorkspaceFilesystem", () => {
     );
   });
 
+  it("inspects the complete existing file for write without a read-size cap", async () => {
+    const root = workspace();
+    const content = `${"a".repeat(65_536)}suffix-that-changes-the-hash`;
+    fs.writeFileSync(path.join(root, "large.txt"), content);
+    const filesystem = new FsSafeWorkspaceFilesystem();
+
+    await expect(
+      filesystem.inspectTextForWrite(root, "large.txt"),
+    ).resolves.toEqual({
+      priorState: "existed",
+      previousHash: createHash("sha256").update(content).digest("hex"),
+    });
+    await expect(
+      filesystem.inspectTextForWrite(root, "missing.txt"),
+    ).resolves.toEqual({ priorState: "none" });
+  });
+
   it("rejects missing parents, non-files, traversal, symlinks, and hardlinks", async () => {
     const parent = workspace();
     const root = path.join(parent, "workspace");
@@ -86,6 +104,11 @@ describe("FsSafeWorkspaceFilesystem", () => {
     });
     await expect(
       filesystem.readTextChunk(root, "directory", 0, 10),
+    ).rejects.toMatchObject({
+      code: "TOOL_IMPLEMENTATION_FAILED",
+    });
+    await expect(
+      filesystem.inspectTextForWrite(root, "directory"),
     ).rejects.toMatchObject({
       code: "TOOL_IMPLEMENTATION_FAILED",
     });

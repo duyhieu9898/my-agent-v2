@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 
 import { AppError, type AppErrorCode } from "../core/errors.js";
 import type {
@@ -6,6 +7,7 @@ import type {
   WorkspaceFilesystem,
   WorkspaceOperation,
   WorkspaceTextChunk,
+  WorkspaceWritePriorState,
 } from "../tools/workspace-filesystem.js";
 import { assertStrictWorkspacePath } from "../tools/workspace-path-policy.js";
 import { FsSafeError, root, type Root } from "./fs-safe.js";
@@ -96,6 +98,33 @@ export class FsSafeWorkspaceFilesystem implements WorkspaceFilesystem {
         await opened.handle.close();
       }
     } catch (error) {
+      throw mapFsSafeError(error);
+    }
+  }
+
+  public async inspectTextForWrite(
+    workspaceRoot: string,
+    targetPath: string,
+  ): Promise<WorkspaceWritePriorState> {
+    await this.assertStrictPath(workspaceRoot, targetPath);
+    const safeRoot = await this.getRoot(workspaceRoot);
+    try {
+      const opened = await safeRoot.open(targetPath);
+      try {
+        this.requireRegularFile(opened.stat.isFile());
+        const hash = createHash("sha256");
+        const stream = opened.handle.createReadStream({ autoClose: false });
+        for await (const chunk of stream) {
+          hash.update(chunk);
+        }
+        return { priorState: "existed", previousHash: hash.digest("hex") };
+      } finally {
+        await opened.handle.close();
+      }
+    } catch (error) {
+      if (isFsSafeCode(error, "not-found")) {
+        return { priorState: "none" };
+      }
       throw mapFsSafeError(error);
     }
   }

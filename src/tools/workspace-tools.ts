@@ -149,29 +149,14 @@ export function createWorkspaceWriteTextTool(
       args: { path: string; content: string; mode: "create" | "write" },
       context,
     ) => {
-      let priorState: "none" | "existed" = "none";
-      let previousHash: string | undefined;
+      let previousState: Awaited<
+        ReturnType<WorkspaceFilesystem["inspectTextForWrite"]>
+      > = { priorState: "none" };
       if (args.mode === "write") {
-        try {
-          const existing = await workspaceFilesystem.readTextChunk(
-            context.workspaceRoot,
-            context.targetPath,
-            0,
-            65536,
-          );
-          priorState = "existed";
-          previousHash = createHash("sha256")
-            .update(existing.text)
-            .digest("hex");
-        } catch (error) {
-          if (
-            !(error instanceof Error) ||
-            !("code" in error) ||
-            error.code !== "TOOL_IMPLEMENTATION_FAILED"
-          ) {
-            throw error;
-          }
-        }
+        previousState = await workspaceFilesystem.inspectTextForWrite(
+          context.workspaceRoot,
+          context.targetPath,
+        );
         await workspaceFilesystem.writeText(
           context.workspaceRoot,
           context.targetPath,
@@ -193,8 +178,7 @@ export function createWorkspaceWriteTextTool(
         path: context.targetPath,
         mode: args.mode,
         bytesWritten,
-        priorState,
-        ...(previousHash ? { previousHash } : {}),
+        ...previousState,
         resultingHash,
       };
     },

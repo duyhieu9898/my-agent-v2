@@ -1,9 +1,12 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { AppError } from "../core/errors.js";
 import { FsSafeWorkspaceFilesystem } from "../platform/workspace-filesystem.js";
 import type { ToolExecutionContext } from "./contracts.js";
+import type { WorkspaceFilesystem } from "./workspace-filesystem.js";
 import {
   createWorkspaceListTool,
   createWorkspaceReadTextTool,
@@ -139,5 +142,62 @@ describe("workspace tools containment", () => {
     } finally {
       fs.rmSync(workspaceRoot, { recursive: true, force: true });
     }
+  });
+
+  it("returns the hash of the complete previous file when writing a large file", async () => {
+    const workspaceRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "workspace-tools-"),
+    );
+    const oldContent = `${"prefix".repeat(11_000)}suffix-that-changes-the-hash`;
+    const prefixHash = createHash("sha256")
+      .update(oldContent.slice(0, 65_536))
+      .digest("hex");
+    const completeHash = createHash("sha256").update(oldContent).digest("hex");
+    fs.writeFileSync(path.join(workspaceRoot, "large.txt"), oldContent);
+    try {
+      const result = await workspaceWriteTextTool.execute(
+        { path: "large.txt", content: "replacement", mode: "write" },
+        context(workspaceRoot, "large.txt"),
+      );
+
+      expect(result).toMatchObject({
+        priorState: "existed",
+        previousHash: completeHash,
+      });
+      expect(result.previousHash).not.toBe(prefixHash);
+      expect(
+        fs.readFileSync(path.join(workspaceRoot, "large.txt"), "utf8"),
+      ).toBe("replacement");
+    } finally {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not write when previous-state inspection fails", async () => {
+    let writeTextCalls = 0;
+    const filesystem: WorkspaceFilesystem = {
+      preflight: async () => undefined,
+      list: async () => [],
+      readTextChunk: async () => ({ text: "", bytesRead: 0, fileSizeBytes: 0 }),
+      inspectTextForWrite: async () => {
+        throw new AppError(
+          "TOOL_IMPLEMENTATION_FAILED",
+          "injected inspection failure",
+        );
+      },
+      createText: async () => undefined,
+      writeText: async () => {
+        writeTextCalls++;
+      },
+    };
+    const writeTool = createWorkspaceWriteTextTool(filesystem);
+
+    await expect(
+      writeTool.execute(
+        { path: "target.txt", content: "new", mode: "write" },
+        context("/workspace", "target.txt"),
+      ),
+    ).rejects.toMatchObject({ code: "TOOL_IMPLEMENTATION_FAILED" });
+    expect(writeTextCalls).toBe(0);
   });
 });
