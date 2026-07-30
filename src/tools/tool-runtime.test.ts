@@ -1924,6 +1924,95 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       expect(events.filter((event) => event === "tool.completed")).toHaveLength(0);
     });
 
+    it("keeps started side-effecting cancellation outcome-uncertain", async () => {
+      const ids = createSequentialIdFactory();
+      const registry = new ToolRegistry();
+      let receivedSignal: AbortSignal | undefined;
+      let releaseSuccess!: () => void;
+      let successPathExecuted = false;
+      let started!: () => void;
+      const startedPromise = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      let cancelled!: () => void;
+      const cancelledPromise = new Promise<void>((resolve) => {
+        cancelled = resolve;
+      });
+      const successBarrier = new Promise<void>((resolve) => {
+        releaseSuccess = resolve;
+      });
+      registry.register(
+        r2Tool({
+          name: "test.abort_aware_side_effect",
+          effectClassification: "side-effecting",
+          concurrencyTrait: "sequential",
+          execute: async (args, context) => {
+            receivedSignal = context.signal;
+            started();
+            await new Promise<void>((resolve, reject) => {
+              const onAbort = () => {
+                cancelled();
+                reject(context.signal?.reason);
+              };
+              context.signal?.addEventListener("abort", onAbort, {
+                once: true,
+              });
+              successBarrier.then(() => {
+                context.signal?.removeEventListener("abort", onAbort);
+                resolve();
+              });
+            });
+            successPathExecuted = true;
+            return { path: args.path };
+          },
+        }),
+      );
+      registry.freeze();
+      const approvals = new ApprovalCoordinator(ids);
+      const runtime = new ToolRuntime(
+        registry,
+        {
+          evaluateInvocation: async (_tool: ToolDescriptor, args: any) => ({
+            ...allowedPolicy(args),
+            decision: "require-approval",
+          }),
+        } as any,
+        approvals,
+      );
+      const context = r2Context(ids);
+      approvals.onRequest((binding) => {
+        approvals.resolveApproval(binding.approvalId, context.runId, "allow-once");
+      });
+      const controller = new AbortController();
+      const events: string[] = [];
+      runtime.onEvent((event) => events.push(event.type));
+      const execution = runtime.executeBatch(
+        [r2Request(context, 1, "test.abort_aware_side_effect", "A")],
+        context,
+        controller.signal,
+      );
+
+      await startedPromise;
+      expect(events).toContain("tool.started");
+      controller.abort();
+      await cancelledPromise;
+      const outcomes = await execution;
+      releaseSuccess();
+      await Promise.resolve();
+
+      expect(receivedSignal?.aborted).toBe(true);
+      expect(successPathExecuted).toBe(false);
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]).toMatchObject({
+        ok: false,
+        terminalState: "outcome-uncertain",
+        error: { code: "TOOL_CANCELLED" },
+      });
+      expect(events.filter((event) => event === "tool.failed")).toHaveLength(1);
+      expect(events.filter((event) => event === "tool.cancelled")).toHaveLength(0);
+      expect(events.filter((event) => event === "tool.completed")).toHaveLength(0);
+    });
+
     it("aborts the active invocation signal on timeout and suppresses late success", async () => {
       vi.useFakeTimers();
       try {

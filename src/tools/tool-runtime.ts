@@ -793,21 +793,24 @@ export class ToolRuntime {
           durationMs: Date.now() - startTime,
         };
       } catch (err: any) {
-        const isCancelled = err instanceof AppError && err.code === "TOOL_CANCELLED";
-        const isUncertain = !isCancelled && tool.effectClassification === "side-effecting";
+        const isCancellation =
+          err instanceof AppError && err.code === "TOOL_CANCELLED";
+        const isSideEffecting = tool.effectClassification === "side-effecting";
+        const isUncertain = isSideEffecting;
+        const isSafelyCancelled = isCancellation && !isUncertain;
         const code =
           err instanceof AppError
             ? err.code
             : isUncertain
               ? "TOOL_OUTCOME_UNCERTAIN"
               : "TOOL_IMPLEMENTATION_FAILED";
-        const terminalState: TerminalToolState = isCancelled
-          ? "cancelled-with-no-known-side-effect"
-          : isUncertain
+        const terminalState: TerminalToolState = isUncertain
             ? "outcome-uncertain"
+            : isSafelyCancelled
+              ? "cancelled-with-no-known-side-effect"
             : "failed-before-known-side-effect";
 
-        this.emitEvent(isCancelled ? "tool.cancelled" : "tool.failed", runId, {
+        this.emitEvent(isSafelyCancelled ? "tool.cancelled" : "tool.failed", runId, {
           toolCallId: req.toolCallId,
           data: { error: err.message, code },
         });
