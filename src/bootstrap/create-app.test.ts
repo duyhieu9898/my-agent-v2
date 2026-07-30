@@ -85,14 +85,6 @@ describe("createApp", () => {
     expect(observation.policyFingerprint.length).toBeGreaterThan(0);
     expect(observation.policyFingerprint).not.toBe("placeholder");
 
-    expect(observation.toolRuntimeUsesRegistry).toBe(true);
-    expect(observation.toolRuntimeUsesPolicy).toBe(true);
-    expect(observation.toolRuntimeUsesApprovalCoordinator).toBe(true);
-
-    expect(observation.agentRuntimeUsesToolRuntime).toBe(true);
-    expect(observation.agentRuntimeUsesRegistry).toBe(true);
-    expect(observation.agentRuntimeUsesPolicy).toBe(true);
-
     const forbiddenBypassKeys = [
       "workspaceFilesystem",
       "workspaceTools",

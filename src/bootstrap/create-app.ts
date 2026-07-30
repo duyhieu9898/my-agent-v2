@@ -59,14 +59,6 @@ export type CreateAppCompositionObservation = Readonly<{
   registryFingerprint: string;
   policyFingerprint: string;
 
-  toolRuntimeUsesRegistry: boolean;
-  toolRuntimeUsesPolicy: boolean;
-  toolRuntimeUsesApprovalCoordinator: boolean;
-
-  agentRuntimeUsesToolRuntime: boolean;
-  agentRuntimeUsesRegistry: boolean;
-  agentRuntimeUsesPolicy: boolean;
-
   exposedAppKeys: readonly string[];
 }>;
 
@@ -134,16 +126,10 @@ export function createApp(
   const workspacePolicy = new WorkspacePolicy(workspaceFilesystem);
   const approvalCoordinator = new ApprovalCoordinator(randomIdFactory);
 
-  const toolRuntimeDependencies = {
-    registry: toolRegistry,
-    policy: workspacePolicy,
-    approvalCoordinator,
-  };
-
   const toolRuntime = new ToolRuntime(
-    toolRuntimeDependencies.registry,
-    toolRuntimeDependencies.policy,
-    toolRuntimeDependencies.approvalCoordinator,
+    toolRegistry,
+    workspacePolicy,
+    approvalCoordinator,
   );
 
   const agentRegistry = new AgentRegistry([
@@ -218,12 +204,6 @@ export function createApp(
   const journal = new SqliteRunJournalStore(database);
   const events = new RuntimeEventBus();
 
-  const agentRuntimeDependencies = {
-    toolRuntime,
-    toolRegistry,
-    workspacePolicy,
-  };
-
   const runtime = new AgentRuntime({
     sessions: sessionResolver,
     transcripts,
@@ -236,9 +216,9 @@ export function createApp(
     agentRegistry,
     harnessRegistry,
     tokenEstimator,
-    toolRuntime: agentRuntimeDependencies.toolRuntime,
-    toolRegistry: agentRuntimeDependencies.toolRegistry,
-    workspacePolicy: agentRuntimeDependencies.workspacePolicy,
+    toolRuntime,
+    toolRegistry,
+    workspacePolicy,
     workspaceRoot: config.workspaceDir,
     lanes: new SessionRunLaneCoordinator(
       config.runtime.perSessionQueueCapacity,
@@ -307,20 +287,6 @@ export function createApp(
       ),
       registryFingerprint: toolRegistry.computeFingerprint(),
       policyFingerprint: workspacePolicy.computeFingerprint(),
-
-      toolRuntimeUsesRegistry:
-        toolRuntimeDependencies.registry === toolRegistry,
-      toolRuntimeUsesPolicy:
-        toolRuntimeDependencies.policy === workspacePolicy,
-      toolRuntimeUsesApprovalCoordinator:
-        toolRuntimeDependencies.approvalCoordinator === approvalCoordinator,
-
-      agentRuntimeUsesToolRuntime:
-        agentRuntimeDependencies.toolRuntime === toolRuntime,
-      agentRuntimeUsesRegistry:
-        agentRuntimeDependencies.toolRegistry === toolRegistry,
-      agentRuntimeUsesPolicy:
-        agentRuntimeDependencies.workspacePolicy === workspacePolicy,
 
       exposedAppKeys: Object.freeze(Object.keys(app)),
     });
