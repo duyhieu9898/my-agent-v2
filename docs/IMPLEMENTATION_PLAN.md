@@ -72,12 +72,21 @@ Reserved module roots such as `src/agents/`, `src/context/`, `src/models/`, and 
 | **6 — Curated memory**        | Explicit cross-session memory is searchable and recallable.                                                     | SQLite FTS5, provenance, policy-controlled writes, snapshot recall, and prompt-section evidence pass.                                    |
 | **7 — Control UI**            | Local users can inspect and operate sessions, runs, usage, memory, and artifacts through Gateway APIs.          | UI remains a pure Gateway client and all primary operational surfaces work.                                                              |
 
-Milestone 3 is active under `docs/plans/active/0002-tool-runtime.md`. M3-R2
-closed at `9c9792c3ebe8153c20427a4992c0c32d10d75796`; M3-R3-1 workspace
+Milestone 3 is active under `docs/plans/active/0002-tool-runtime.md`.
+
+- M3-R3-1: PASS
+- M3-R3-2: PASS
+- M3-R3-3 through M3-R3-6: PLANNED — NOT RUN
+- M3-R3: IN PROGRESS
+- M3-F02: CLOSED — PASS
+- Overall M3: FAIL
+
+M3-R2 closed at `9c9792c3ebe8153c20427a4992c0c32d10d75796`; M3-R3-1 workspace
 containment and symlink safety closed at
-`9861678e7daa1b61e1736afa80fb7276a321e2ad`. M3-R3 remains in progress;
-M3-R3B — fs-safe create/write publication and TOCTOU safety (M3-R3-2) is the next
-checkpoint. Overall M3 remains open under the active plan.
+`9861678e7daa1b61e1736afa80fb7276a321e2ad`; and M3-R3-2 fs-safe-backed
+create/write publication and TOCTOU handling closed at
+`8e0882febce2507df9de4bad14efe9b25d440b47`. The next execution checkpoint is
+M3-R3-3 — abort propagation to underlying tool I/O.
 Milestones 4–7 remain queued. Their detailed execution plans should be created
 only when the preceding milestone has validated its dependencies.
 
