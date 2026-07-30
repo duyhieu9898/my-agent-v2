@@ -15,6 +15,7 @@ import {
 import { ApprovalCoordinator } from "../policy/approval-coordinator.js";
 import type { ApprovalRequestBinding } from "../policy/approval-coordinator.js";
 import { WorkspacePolicy } from "../policy/workspace-policy.js";
+import { FsSafeWorkspaceFilesystem } from "../platform/workspace-filesystem.js";
 import { createSequentialIdFactory } from "../test/foundation-fixtures.js";
 import type {
   NormalizedToolRequest,
@@ -25,9 +26,9 @@ import type {
 import { ToolRegistry } from "./tool-registry.js";
 import { ToolRuntime, type ToolBatchContext } from "./tool-runtime.js";
 import {
-  workspaceListTool,
-  workspaceReadTextTool,
-  workspaceWriteTextTool,
+  createWorkspaceListTool,
+  createWorkspaceReadTextTool,
+  createWorkspaceWriteTextTool,
 } from "./workspace-tools.js";
 
 describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () => {
@@ -47,13 +48,14 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
 
   function setupTestRuntime(customWorkspaceRoot?: string) {
     const idFactory = createSequentialIdFactory();
+    const workspaceFilesystem = new FsSafeWorkspaceFilesystem();
     const registry = new ToolRegistry();
-    registry.register(workspaceListTool);
-    registry.register(workspaceReadTextTool);
-    registry.register(workspaceWriteTextTool);
+    registry.register(createWorkspaceListTool(workspaceFilesystem));
+    registry.register(createWorkspaceReadTextTool(workspaceFilesystem));
+    registry.register(createWorkspaceWriteTextTool(workspaceFilesystem));
     registry.freeze();
 
-    const policy = new WorkspacePolicy();
+    const policy = new WorkspacePolicy(workspaceFilesystem);
     const approvalCoordinator = new ApprovalCoordinator(idFactory, 5000);
     const runtime = new ToolRuntime(registry, policy, approvalCoordinator, {
       maxToolArgumentBytes: 1024,
@@ -127,7 +129,7 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
         // Mutate rawArguments fields immediately after admission
         rawArguments["path"] = "../escape.txt";
         rawArguments["content"] = "HACKED";
-        rawArguments["mode"] = "replace";
+        rawArguments["mode"] = "write";
 
         const outcomes = await batchPromise;
         expect(outcomes).toHaveLength(1);
@@ -190,6 +192,33 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       expect(outcomes[0]!.error?.code).toBe("TOOL_ARGUMENTS_INVALID");
 
       // Policy & execution events must not fire
+      expect(events).not.toContain("policy.evaluated");
+      expect(events).not.toContain("tool.started");
+    });
+
+    it("rejects the removed replace write mode before policy or execution", async () => {
+      const { runtime, batchContext } = setupTestRuntime();
+      const events: string[] = [];
+      runtime.onEvent((event) => events.push(event.type));
+
+      const [outcome] = await runtime.executeBatch(
+        [
+          {
+            toolCallId: createToolCallId("tcall_replace_removed"),
+            modelCallId: batchContext.modelCallId,
+            ordinal: 1,
+            toolName: "workspace.write_text",
+            rawArguments: {
+              path: "file.txt",
+              content: "content",
+              mode: "replace",
+            },
+          },
+        ],
+        batchContext,
+      );
+
+      expect(outcome?.error?.code).toBe("TOOL_ARGUMENTS_INVALID");
       expect(events).not.toContain("policy.evaluated");
       expect(events).not.toContain("tool.started");
     });
@@ -519,7 +548,7 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       customRegistry.register(fakeSideEffectTool);
       customRegistry.freeze();
 
-      const policy = new WorkspacePolicy();
+      const policy = new WorkspacePolicy(new FsSafeWorkspaceFilesystem());
       const customRuntime = new ToolRuntime(
         customRegistry,
         policy,
@@ -598,7 +627,7 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       customRegistry.register(fakeSideEffectTool);
       customRegistry.freeze();
 
-      const policy = new WorkspacePolicy();
+      const policy = new WorkspacePolicy(new FsSafeWorkspaceFilesystem());
       const customRuntime = new ToolRuntime(
         customRegistry,
         policy,
@@ -668,7 +697,7 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       customRegistry.register(fakeTool);
       customRegistry.freeze();
 
-      const policy = new WorkspacePolicy();
+      const policy = new WorkspacePolicy(new FsSafeWorkspaceFilesystem());
       const approvalCoordinator = new ApprovalCoordinator(idFactory, 5000);
       const customRuntime = new ToolRuntime(
         customRegistry,
@@ -858,7 +887,7 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       customRegistry.register(fakeTool);
       customRegistry.freeze();
 
-      const policy = new WorkspacePolicy();
+      const policy = new WorkspacePolicy(new FsSafeWorkspaceFilesystem());
       const approvalCoordinator = new ApprovalCoordinator(idFactory, 5000);
       const customRuntime = new ToolRuntime(
         customRegistry,

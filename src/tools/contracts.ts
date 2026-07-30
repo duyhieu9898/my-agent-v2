@@ -280,7 +280,7 @@ export const WorkspaceWriteTextArgsSchema = Type.Object(
   {
     path: Type.String({ description: "Relative path inside workspace" }),
     content: Type.String({ description: "UTF-8 content to write" }),
-    mode: Type.Union([Type.Literal("create"), Type.Literal("replace")]),
+    mode: Type.Union([Type.Literal("create"), Type.Literal("write")]),
   },
   { additionalProperties: false },
 );
@@ -288,7 +288,7 @@ export const WorkspaceWriteTextArgsSchema = Type.Object(
 export const WorkspaceWriteTextResultSchema = Type.Object(
   {
     path: Type.String(),
-    mode: Type.Union([Type.Literal("create"), Type.Literal("replace")]),
+    mode: Type.Union([Type.Literal("create"), Type.Literal("write")]),
     bytesWritten: Type.Integer(),
     priorState: Type.Union([Type.Literal("none"), Type.Literal("existed")]),
     previousHash: Type.Optional(Type.String()),

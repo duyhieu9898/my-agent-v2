@@ -2,21 +2,32 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as joinPath from "node:path";
 import { describe, expect, it } from "vitest";
+import { FsSafeWorkspaceFilesystem } from "../platform/workspace-filesystem.js";
 import { createTemporaryDatabase } from "../test/foundation-fixtures.js";
 import {
-  workspaceListTool,
-  workspaceWriteTextTool,
+  createWorkspaceListTool,
+  createWorkspaceWriteTextTool,
 } from "../tools/workspace-tools.js";
 import { WorkspacePolicy } from "./workspace-policy.js";
 
+function setupWorkspacePolicy() {
+  const workspaceFilesystem = new FsSafeWorkspaceFilesystem();
+  return {
+    policy: new WorkspacePolicy(workspaceFilesystem),
+    workspaceListTool: createWorkspaceListTool(workspaceFilesystem),
+    workspaceWriteTextTool: createWorkspaceWriteTextTool(workspaceFilesystem),
+  };
+}
+
 describe("WorkspacePolicy", () => {
   it("computes deterministic fingerprint", () => {
-    const policy = new WorkspacePolicy();
+    const { policy } = setupWorkspacePolicy();
     expect(policy.computeFingerprint()).toHaveLength(64);
   });
 
   it("evaluates visibility correctly", () => {
-    const policy = new WorkspacePolicy();
+    const { policy, workspaceListTool, workspaceWriteTextTool } =
+      setupWorkspacePolicy();
     const visible = policy.evaluateVisibility([
       workspaceListTool,
       workspaceWriteTextTool,
@@ -27,7 +38,8 @@ describe("WorkspacePolicy", () => {
   it("permits safe read-only paths and denies escapes", async () => {
     const { path: tempDir, close } = createTemporaryDatabase();
     const workspaceRoot = joinPath.dirname(tempDir);
-    const policy = new WorkspacePolicy();
+    fs.mkdirSync(joinPath.join(workspaceRoot, "sub"));
+    const { policy, workspaceListTool } = setupWorkspacePolicy();
 
     const allowRes = await policy.evaluateInvocation(
       workspaceListTool,
@@ -56,7 +68,7 @@ describe("WorkspacePolicy", () => {
   it("requires approval for workspace.write_text on safe paths", async () => {
     const { path: tempDir, close } = createTemporaryDatabase();
     const workspaceRoot = joinPath.dirname(tempDir);
-    const policy = new WorkspacePolicy();
+    const { policy, workspaceWriteTextTool } = setupWorkspacePolicy();
 
     const res = await policy.evaluateInvocation(
       workspaceWriteTextTool,
@@ -72,7 +84,8 @@ describe("WorkspacePolicy", () => {
     const workspaceRoot = fs.mkdtempSync(
       joinPath.join(os.tmpdir(), "workspace-policy-"),
     );
-    const policy = new WorkspacePolicy();
+    fs.mkdirSync(joinPath.join(workspaceRoot, "safe"));
+    const { policy, workspaceListTool } = setupWorkspacePolicy();
     try {
       for (const target of [
         "",
@@ -93,12 +106,12 @@ describe("WorkspacePolicy", () => {
 
       const result = await policy.evaluateInvocation(
         workspaceListTool,
-        { path: "sub/../safe.txt" },
+        { path: "sub/../safe" },
         workspaceRoot,
       );
       expect(result).toMatchObject({
         decision: "allow",
-        targetPath: "safe.txt",
+        targetPath: "safe",
       });
     } finally {
       fs.rmSync(workspaceRoot, { recursive: true, force: true });
@@ -132,7 +145,7 @@ describe("WorkspacePolicy", () => {
       joinPath.join(workspaceRoot, "inside", "file.txt"),
       joinPath.join(workspaceRoot, "inside-file"),
     );
-    const policy = new WorkspacePolicy();
+    const { policy, workspaceListTool } = setupWorkspacePolicy();
     try {
       for (const target of [
         "outside-dir/sentinel.txt",

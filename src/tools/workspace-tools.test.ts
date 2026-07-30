@@ -2,13 +2,19 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
+import { FsSafeWorkspaceFilesystem } from "../platform/workspace-filesystem.js";
 import type { ToolExecutionContext } from "./contracts.js";
 import {
-  workspaceListTool,
-  workspaceReadTextTool,
-  workspaceWriteTextTool,
+  createWorkspaceListTool,
+  createWorkspaceReadTextTool,
+  createWorkspaceWriteTextTool,
 } from "./workspace-tools.js";
-import { isWorkspacePathContained } from "./workspace-path-safety.js";
+
+const workspaceFilesystem = new FsSafeWorkspaceFilesystem();
+const workspaceListTool = createWorkspaceListTool(workspaceFilesystem);
+const workspaceReadTextTool = createWorkspaceReadTextTool(workspaceFilesystem);
+const workspaceWriteTextTool =
+  createWorkspaceWriteTextTool(workspaceFilesystem);
 
 function context(
   workspaceRoot: string,
@@ -27,15 +33,6 @@ function context(
 }
 
 describe("workspace tools containment", () => {
-  it("uses path-separator-aware containment boundaries", () => {
-    expect(
-      isWorkspacePathContained("/work/root", "/work/root-escape/file.txt"),
-    ).toBe(false);
-    expect(isWorkspacePathContained("/work/root", "/work/root/file.txt")).toBe(
-      true,
-    );
-  });
-
   it("independently rejects escaped and symlink targets when policy is bypassed", async () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-tools-"));
     const workspaceRoot = path.join(parent, "workspace");
@@ -82,7 +79,7 @@ describe("workspace tools containment", () => {
       ).rejects.toMatchObject({ code: "TOOL_SANDBOX_UNAVAILABLE" });
       await expect(
         workspaceWriteTextTool.execute(
-          { path: "outside-file", content: "escaped", mode: "replace" },
+          { path: "outside-file", content: "escaped", mode: "write" },
           context(workspaceRoot, "outside-file"),
         ),
       ).rejects.toMatchObject({ code: "TOOL_SANDBOX_UNAVAILABLE" });
@@ -112,6 +109,33 @@ describe("workspace tools containment", () => {
           context(workspaceRoot, "/tmp"),
         ),
       ).rejects.toMatchObject({ code: "TOOL_SANDBOX_UNAVAILABLE" });
+    } finally {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("uses write semantics for both new and existing regular files", async () => {
+    const workspaceRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "workspace-tools-"),
+    );
+    try {
+      const created = await workspaceWriteTextTool.execute(
+        { path: "write.txt", content: "first", mode: "write" },
+        context(workspaceRoot, "write.txt"),
+      );
+      const overwritten = await workspaceWriteTextTool.execute(
+        { path: "write.txt", content: "second", mode: "write" },
+        context(workspaceRoot, "write.txt"),
+      );
+
+      expect(created).toMatchObject({ mode: "write", priorState: "none" });
+      expect(overwritten).toMatchObject({
+        mode: "write",
+        priorState: "existed",
+      });
+      expect(
+        fs.readFileSync(path.join(workspaceRoot, "write.txt"), "utf8"),
+      ).toBe("second");
     } finally {
       fs.rmSync(workspaceRoot, { recursive: true, force: true });
     }

@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import * as path from "node:path";
 import type { ToolDescriptor } from "../tools/contracts.js";
-import {
-  normalizeWorkspaceTarget,
-  resolveSafeWorkspacePath,
-} from "../tools/workspace-path-safety.js";
+import type {
+  WorkspaceFilesystem,
+  WorkspaceOperation,
+} from "../tools/workspace-filesystem.js";
+import { normalizeWorkspaceTarget } from "../tools/workspace-target.js";
 
 export type PolicyDecisionType = "allow" | "deny" | "require-approval";
 
@@ -21,6 +22,10 @@ export interface InvocationPolicyResult {
 export class WorkspacePolicy {
   public readonly profile = "workspace-policy-v1";
   public readonly version = "1.0.0";
+
+  public constructor(
+    private readonly workspaceFilesystem: WorkspaceFilesystem,
+  ) {}
 
   public computeFingerprint(): string {
     const canonical = JSON.stringify({
@@ -104,7 +109,11 @@ export class WorkspacePolicy {
     }
 
     try {
-      await resolveSafeWorkspacePath(workspaceRoot, normalizedRel);
+      await this.workspaceFilesystem.preflight(
+        workspaceRoot,
+        normalizedRel,
+        operationForTool(tool.name, rawArgs),
+      );
     } catch {
       return {
         ...baseResult,
@@ -129,4 +138,13 @@ export class WorkspacePolicy {
       targetPath: normalizedRel,
     };
   }
+}
+
+function operationForTool(
+  toolName: string,
+  rawArgs: Record<string, unknown>,
+): WorkspaceOperation {
+  if (toolName === "workspace.list") return "list";
+  if (toolName === "workspace.read_text") return "read";
+  return rawArgs["mode"] === "write" ? "write" : "create";
 }

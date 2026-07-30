@@ -22,16 +22,20 @@ import { BuiltinStepHarness } from "./harness.js";
 import { HarnessRegistry } from "./harness-registry.js";
 import { HeuristicTokenEstimator } from "../models/token-estimator.js";
 import { ToolRegistry } from "../tools/tool-registry.js";
-import { workspaceWriteTextTool } from "../tools/workspace-tools.js";
+import { createWorkspaceWriteTextTool } from "../tools/workspace-tools.js";
 import { ToolRuntime } from "../tools/tool-runtime.js";
 import { ApprovalCoordinator } from "../policy/approval-coordinator.js";
 import { WorkspacePolicy } from "../policy/workspace-policy.js";
+import { FsSafeWorkspaceFilesystem } from "../platform/workspace-filesystem.js";
 import {
   createRuntimeAuthority,
   createSequentialIdFactory,
   createTemporaryDatabase,
   primaryAgentDefinition,
 } from "../test/foundation-fixtures.js";
+
+const workspaceFilesystem = new FsSafeWorkspaceFilesystem();
+const workspaceWriteTextTool = createWorkspaceWriteTextTool(workspaceFilesystem);
 
 function collectTerminalEvents(events: RuntimeEventBus): {
   terminal(runId: string): Promise<RuntimeEvent>;
@@ -2540,7 +2544,7 @@ describe("AgentRuntime", () => {
       usageBudgetGate: new UsageBudgetGate(database, [], []),
       toolRuntime: mockToolRuntime,
       toolRegistry: registry,
-      workspacePolicy: new WorkspacePolicy(),
+      workspacePolicy: new WorkspacePolicy(workspaceFilesystem),
       workspaceRoot: process.cwd(),
     });
 
@@ -2660,7 +2664,7 @@ describe("AgentRuntime", () => {
       const idFactory = createSequentialIdFactory();
       const toolRuntime = new ToolRuntime(
         registry,
-        new WorkspacePolicy(),
+        new WorkspacePolicy(workspaceFilesystem),
         new ApprovalCoordinator(idFactory, 5000),
       );
       const provider = new FakeModelProvider({
@@ -2688,7 +2692,7 @@ describe("AgentRuntime", () => {
         usageBudgetGate: new UsageBudgetGate(database, [], []),
         toolRuntime,
         toolRegistry: registry,
-        workspacePolicy: new WorkspacePolicy(),
+        workspacePolicy: new WorkspacePolicy(workspaceFilesystem),
         workspaceRoot: process.cwd(),
       });
 

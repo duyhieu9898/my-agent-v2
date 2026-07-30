@@ -28,6 +28,7 @@ import {
 import { HeuristicTokenEstimator } from "../models/token-estimator.js";
 import { ApprovalCoordinator } from "../policy/approval-coordinator.js";
 import { WorkspacePolicy } from "../policy/workspace-policy.js";
+import { FsSafeWorkspaceFilesystem } from "../platform/workspace-filesystem.js";
 import { SessionResolver } from "../sessions/session-resolver.js";
 import { SqliteSessionStore } from "../sessions/sqlite-session-store.js";
 import { SqliteTranscriptStore } from "../sessions/sqlite-transcript-store.js";
@@ -36,9 +37,9 @@ import { migrateDatabase } from "../storage/migrate.js";
 import { ToolRegistry } from "../tools/tool-registry.js";
 import { ToolRuntime } from "../tools/tool-runtime.js";
 import {
-  workspaceListTool,
-  workspaceReadTextTool,
-  workspaceWriteTextTool,
+  createWorkspaceListTool,
+  createWorkspaceReadTextTool,
+  createWorkspaceWriteTextTool,
 } from "../tools/workspace-tools.js";
 import { createLogger } from "./create-logger.js";
 
@@ -96,14 +97,15 @@ export function createApp(
   migrateDatabase(database);
 
   const tokenEstimator = new HeuristicTokenEstimator();
+  const workspaceFilesystem = new FsSafeWorkspaceFilesystem();
 
   const toolRegistry = new ToolRegistry();
-  toolRegistry.register(workspaceListTool);
-  toolRegistry.register(workspaceReadTextTool);
-  toolRegistry.register(workspaceWriteTextTool);
+  toolRegistry.register(createWorkspaceListTool(workspaceFilesystem));
+  toolRegistry.register(createWorkspaceReadTextTool(workspaceFilesystem));
+  toolRegistry.register(createWorkspaceWriteTextTool(workspaceFilesystem));
   toolRegistry.freeze();
 
-  const workspacePolicy = new WorkspacePolicy();
+  const workspacePolicy = new WorkspacePolicy(workspaceFilesystem);
   const approvalCoordinator = new ApprovalCoordinator(randomIdFactory);
 
   const toolRuntime = new ToolRuntime(

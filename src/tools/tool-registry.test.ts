@@ -1,9 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { Type } from "typebox";
+import { FsSafeWorkspaceFilesystem } from "../platform/workspace-filesystem.js";
 import type { ToolDescriptor, ToolRegistration } from "./contracts.js";
 import { canonicalJsonStringify, strictJsonSnapshot } from "./contracts.js";
 import { ToolRegistry } from "./tool-registry.js";
-import { workspaceListTool, workspaceReadTextTool } from "./workspace-tools.js";
+import {
+  createWorkspaceListTool,
+  createWorkspaceReadTextTool,
+} from "./workspace-tools.js";
+
+const workspaceFilesystem = new FsSafeWorkspaceFilesystem();
+const workspaceListTool = createWorkspaceListTool(workspaceFilesystem);
+const workspaceReadTextTool = createWorkspaceReadTextTool(workspaceFilesystem);
 
 describe("ToolRegistry", () => {
   it("registers tools and computes deterministic fingerprints", () => {
