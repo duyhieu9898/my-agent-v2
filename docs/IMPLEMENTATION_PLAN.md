@@ -76,7 +76,8 @@ Milestone 3 is active under `docs/plans/active/0002-tool-runtime.md`.
 
 - M3-R3-1: PASS
 - M3-R3-2: PASS
-- M3-R3-3 through M3-R3-6: PLANNED — NOT RUN
+- M3-R3-3: PASS
+- M3-R3-4 through M3-R3-6: PLANNED — NOT RUN
 - M3-R3: IN PROGRESS
 - M3-F02: CLOSED — PASS
 - Overall M3: FAIL
@@ -85,8 +86,10 @@ M3-R2 closed at `9c9792c3ebe8153c20427a4992c0c32d10d75796`; M3-R3-1 workspace
 containment and symlink safety closed at
 `9861678e7daa1b61e1736afa80fb7276a321e2ad`; and M3-R3-2 fs-safe-backed
 create/write publication and TOCTOU handling closed at
-`8e0882febce2507df9de4bad14efe9b25d440b47`. The next execution checkpoint is
-M3-R3-3 — abort propagation to underlying tool I/O.
+`8e0882febce2507df9de4bad14efe9b25d440b47`; and M3-R3-3 abort propagation
+to underlying tool I/O closed at `7010bcb1d2dae194d16a886aac992f7592c77160`.
+The next execution checkpoint is M3-R3-4 — post-start side-effect certainty
+and uncertain outcomes.
 Milestones 4–7 remain queued. Their detailed execution plans should be created
 only when the preceding milestone has validated its dependencies.
 

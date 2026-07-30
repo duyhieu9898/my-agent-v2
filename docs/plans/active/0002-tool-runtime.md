@@ -774,7 +774,7 @@ Current accepted independent closure-audit findings:
 | `M3-F01` | `CLOSED — PASS (R2 scope)` | batch is not completely planned before implementation I/O; policy/approval occur during execution; concurrency is unbounded or configured capacity is unused; not every request receives a terminal outcome |
 | `M3-F02` | `CLOSED — PASS`            | closure consists of M3-R3-1 workspace containment and strict symlink safety + M3-R3-2 fs-safe-backed atomic create/write publication and TOCTOU handling                                                    |
 | `M3-F03` | `CLOSED — PASS (R1 scope)` | registry publication, normalized invocation identity, host tool-call identity, or exact approval binding is insufficient                                                                                    |
-| `M3-F04` | `DECISION VIOLATION`       | timeout/cancellation races only the returned promise or does not control underlying I/O; post-start certainty is incorrect                                                                                  |
+| `M3-F04` | `OPEN — M3-R3-4`           | post-start side-effect certainty and uncertain outcomes remain incomplete                                                                                                                                    |
 | `M3-F05` | `DECISION VIOLATION`       | durable tool lifecycle journal or Gemini tool-cycle continuation evidence is incomplete                                                                                                                     |
 | `M3-F06` | `DECISION VIOLATION`       | shutdown does not cancel and drain active runtime/tool work before storage close                                                                                                                            |
 | `M3-F07` | `MISSING CLOSURE EVIDENCE` | controlled verifier does not prove the required denial, expiry, cancellation, uncertainty, replay, transcript, journal, checkpoint, finalization, usage, and cleanup matrix                                 |
@@ -918,7 +918,7 @@ relevant Architecture lifecycle/security invariants.
 | ------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | -------------- | ----------------- |
 | M3-R3-1 | M3-F02; active plan §4.6; ADR 0008; Architecture lifecycle/security invariants           | Paths or symlinks could escape the explicit workspace.                                       | Enforce workspace containment and symlink safety.                     | Temporary filesystem containment, traversal, and symlink-escape tests with no escaped access.                                 | blocking       | PASS              |
 | M3-R3-2 | M3-F02; active plan §4.6; ADR 0008; ADR 0016; Architecture lifecycle/security invariants | Create/write publication could race path changes or expose partial writes.                   | Use fs-safe-backed atomic create/write; retain strict R3A path rules. | Temporary filesystem create/write evidence: no clobber, no partial destination, no implicit parent, and no redirected access. | blocking       | PASS              |
-| M3-R3-3 | M3-F04; active plan §§4.6, 4.11; ADR 0006; ADR 0008                                      | Timeout or cancellation could race only the returned promise while underlying I/O continues. | Propagate abort to underlying I/O and produce one terminal outcome.   | Abort-aware fake I/O proves underlying operation observes cancellation and cannot later complete successfully.                | blocking       | PLANNED — NOT RUN |
+| M3-R3-3 | M3-F04; active plan §§4.6, 4.11; ADR 0006; ADR 0008                                      | Timeout or cancellation could race only the returned promise while underlying I/O continues. | Propagate abort to underlying I/O and produce one terminal outcome.   | Abort-aware fake I/O proves underlying operation observes cancellation and cannot later complete successfully.                | blocking       | PASS              |
 | M3-R3-4 | M3-F04; active plan §4.11; ADR 0006; ADR 0008                                            | Post-start side effects could be reported as safely rolled back.                             | Classify post-start ambiguous effects as uncertain.                   | Fault-injected side-effect fake proves uncertain terminal evidence and no replay.                                             | blocking       | PLANNED — NOT RUN |
 | M3-R3-5 | M3-F06; active plan §§4.6, 4.11; ADR 0006; Architecture lifecycle/security invariants    | SQLite could close while runtime/tool work remains active.                                   | Cancel and drain active work before storage close.                    | Ordered shutdown fake records cancellation, drain, cleanup, then storage close; asserts close is last.                        | blocking       | PLANNED — NOT RUN |
 | M3-R3-6 | M3-F02, M3-F04, M3-F06; active plan §4.11; ADR 0006; ADR 0008                            | Success, failure, timeout, or cancellation could leak temporary resources or handles.        | Clean up in every terminal path.                                      | Terminal-path matrix asserts cleanup for success, failure, cancellation, timeout, and uncertain outcomes.                     | blocking       | PLANNED — NOT RUN |
@@ -974,11 +974,40 @@ no local temp/rename publication implementation.
 
 M3-R3BR-F01: CLOSED — PASS
 
+M3-R3-3 closure:
+
+```text
+Authority/baseline:
+dd625de702258c989f12a063562ce8b55a40c2a4
+
+Implementation:
+a54a9ed61c1cd8f5ef29c74e6de63505a2947fe5
+
+Narrow remediation:
+7010bcb1d2dae194d16a886aac992f7592c77160
+
+Result:
+PASS
+
+Accepted by user:
+2026-07-30
+
+Scope:
+call-scoped abort propagation;
+parent cancellation and per-tool timeout abort underlying cooperative I/O;
+one terminal outcome;
+late success suppression;
+workspace AbortSignal production wiring;
+side-effecting post-start cancellation remains outcome-uncertain.
+```
+
+M3-R3C-F01: CLOSED — PASS
+
 M3-F02: CLOSED — PASS for M3-R3-1 workspace containment and strict symlink safety
 
 - M3-R3-2 fs-safe-backed atomic create/write publication and TOCTOU handling.
 
-**Next execution checkpoint:** M3-R3-3 — abort propagation to underlying tool I/O
+**Next execution checkpoint:** M3-R3-4 — post-start side-effect certainty and uncertain outcomes
 
 ### M3-R4 — Lifecycle journal, Gemini continuation, and controlled verification
 
