@@ -29,6 +29,7 @@ accepted local decision unless that decision is superseded by another ADR.
 | [0013](./0013-control-ui-and-session-presentation-surfaces.md) | Accepted | Treat the Control UI as a Gateway client and future boards/widgets as sandboxed presentation state owned by `agentId + sessionKey`, independent of transcript reset. |
 | [0014](./0014-memory-ownership-retrieval-and-evolution.md) | Accepted | Add explicit per-agent curated memory with provenance, SQLite FTS5 retrieval, frozen per-run recall snapshots, Tool Runtime writes, and Run Journal evidence. |
 | [0015](./0015-usage-accounting-and-cumulative-budget-enforcement.md) | Accepted | Persist model-call usage and enforce optional cumulative token/cost caps through atomic reserve–dispatch–settle accounting with versioned pricing and explicit uncertain state. |
+| [0016](./0016-fs-safe-workspace-filesystem-boundary.md) | Accepted | Use fs-safe as the root-bounded workspace filesystem capability while retaining stricter project path policy and create/write tool semantics. |
 
 ## Dependency order
 
@@ -44,12 +45,15 @@ The foundational decisions should normally be read in this order:
             └─ 0006  Run and attempt lifecycle
                  ├─ 0007  Context and transcript mutation
                  ├─ 0008  Tools, policy, approval, sandbox
+                 │    └─ 0016  fs-safe workspace filesystem boundary
                  └─ 0010  Events, logs, Run Journal, transcripts, audit
                       ├─ 0011  Platform and Browser Runtime
                       ├─ 0012  Plugins and extension contracts
                       ├─ 0013  Control UI and presentation surfaces
                       ├─ 0014  Memory ownership, retrieval, and evolution
                       └─ 0015  Usage accounting and cumulative budgets
+
+0016 also depends on 0011 for platform-boundary ownership.
 ```
 
 This graph communicates the recommended reading and implementation order. The

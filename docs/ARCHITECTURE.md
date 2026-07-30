@@ -1246,6 +1246,18 @@ Sandboxing is separate from policy:
 
 V1 may use host execution with strict policy and limited tools before adding stronger sandbox backends.
 
+### 14.1 Workspace filesystem operations
+
+`workspace.write_text` uses `@openclaw/fs-safe` root-bounded operations through
+the platform boundary. `create` is atomic no-clobber. `write` atomically
+publishes complete content and may create or overwrite a regular target. Neither
+operation creates missing parent directories.
+
+my-agent-v2 applies stricter protected-path and no-symlink policy before
+calling the filesystem capability, and revalidates it at execution. Filesystem
+operations remain bounded by the trusted workspace root. This library-level
+guardrail does not replace sandboxing, which remains a separate boundary.
+
 ---
 
 ## 15. Platform boundary

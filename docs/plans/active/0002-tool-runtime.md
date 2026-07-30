@@ -157,7 +157,7 @@ The immutable production registry contains exactly:
 | ---------------------- | -------------- | ------------- | ------------------------- | -------------------------------------------------- |
 | `workspace.list`       | read-only      | parallel-safe | no, when policy allows    | bounded directory listing under agent workspace    |
 | `workspace.read_text`  | read-only      | parallel-safe | no, when policy allows    | bounded UTF-8 range read under workspace           |
-| `workspace.write_text` | side-effecting | sequential    | allow-once for every call | atomic create or replace of one bounded UTF-8 file |
+| `workspace.write_text` | side-effecting | sequential    | allow-once for every call | atomic create or write of one bounded UTF-8 file |
 
 M3 does not register shell, process, network, browser, delete, rename, chmod, package, service, credential, arbitrary-filesystem, or memory tools.
 
@@ -236,7 +236,7 @@ workspace.read_text:
 workspace.write_text:
   path: normalized relative workspace path
   content: bounded UTF-8 string
-  mode: create | replace
+  mode: create | write
 ```
 
 Results:
@@ -250,7 +250,7 @@ workspace.read_text:
 
 workspace.write_text:
   path, mode, bytesWritten, priorState,
-  previousHash when replaced, resultingHash
+  previousHash when writing an existing target, resultingHash
 ```
 
 No result exposes absolute host paths, environment values, credential data, unrestricted metadata, or implementation objects.
@@ -372,9 +372,9 @@ Rules:
 - no implicit host fallback;
 - unavailable executor/containment: `TOOL_SANDBOX_UNAVAILABLE`;
 - reject escape, protected paths, and symlinks before I/O;
-- `workspace.write_text` uses bounded same-directory temporary write and atomic create/replace;
+- `workspace.write_text` uses fs-safe root-bounded atomic create/write publication;
 - `create` fails if target exists;
-- `replace` fails if a regular target does not exist;
+- `write` may create or overwrite a regular target;
 - no implicit parent-directory creation;
 - no permission broadening or executable output;
 - cleanup occurs in every terminal path.
@@ -695,7 +695,7 @@ All gates are `OPEN — IMPLEMENTATION REQUIRED` at planning completion.
 
 - [ ] implement explicit workspace execution context;
 - [ ] implement normalization, containment, protected-path, and symlink checks;
-- [ ] implement list, ranged read, and atomic create/replace;
+- [ ] implement list, ranged read, and fs-safe atomic create/write publication;
 - [ ] implement limits, cleanup, hashes, and certainty classification;
 - [ ] stop with a security blocker rather than weaken containment.
 
@@ -772,7 +772,7 @@ Current accepted independent closure-audit findings:
 | Finding  | Classification             | Locked meaning                                                                                                                                                                                              |
 | -------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `M3-F01` | `CLOSED — PASS (R2 scope)` | batch is not completely planned before implementation I/O; policy/approval occur during execution; concurrency is unbounded or configured capacity is unused; not every request receives a terminal outcome |
-| `M3-F02` | `DECISION VIOLATION`       | workspace containment, symlink handling, atomic create/replace, normalization-to-execution binding, or TOCTOU safety is insufficient                                                                        |
+| `M3-F02` | `DECISION VIOLATION`       | workspace containment, symlink handling, atomic create/write publication, normalization-to-execution binding, or TOCTOU safety is insufficient                                                                          |
 | `M3-F03` | `CLOSED — PASS (R1 scope)` | registry publication, normalized invocation identity, host tool-call identity, or exact approval binding is insufficient                                                                                    |
 | `M3-F04` | `DECISION VIOLATION`       | timeout/cancellation races only the returned promise or does not control underlying I/O; post-start certainty is incorrect                                                                                  |
 | `M3-F05` | `DECISION VIOLATION`       | durable tool lifecycle journal or Gemini tool-cycle continuation evidence is incomplete                                                                                                                     |
@@ -856,27 +856,16 @@ reachability or an authority violation:
 ### M3-R2 — Batch admission and bounded parallelism
 
 **Mapped findings:** M3-F01 only.
-**Next execution checkpoint:** M3-R3B — Atomic create/replace and TOCTOU safety (M3-R3-2)
+**Next execution checkpoint:** M3-R3B — fs-safe create/write publication and TOCTOU safety (M3-R3-2)
 
-M3-R3BP plan synchronization for M3-R3-2:
+M3-R3BP plan synchronization for M3-R3-2 (superseded by ADR 0016):
 
 ```text
-Implementation decision: adopt @openclaw/fs-safe@0.5.0 as the public,
-root-bounded workspace filesystem safety implementation.
-
-Native mode: require on the supported Linux production path. Unavailable
-native enforcement fails closed; there is no Node fs fallback.
-
-Integration boundary: a project-owned WorkspaceFilesystem interface is shared
-by WorkspacePolicy and the workspace tools. The platform adapter owns fs-safe
-Root creation, configured safety defaults, operation mapping, and stable
-AppError translation. Public package semantics are trusted; local tests prove
-the project integration only.
-
-Removal: delete the handwritten physical containment/symlink traversal and the
-workspace tool temporary-file, rename, and cleanup implementation once the
-adapter is wired. Keep only project-owned lexical target normalization and
-protected-path policy rules.
+The former sole-safety-engine and native=require assumptions are superseded.
+ADR 0016 adopts @openclaw/fs-safe@0.5.0 as the base root-bounded capability,
+retains project lexical/protected-path/strict no-symlink checks, and changes the
+write contract to create | write. Remove only local temp/rename publication,
+direct write sequencing, and temporary cleanup algorithms.
 
 Gate status: M3-R3-2 remains PLANNED — NOT RUN pending implementation and its
 bounded ChatGPT audit. This synchronization does not change acceptance status.
@@ -927,7 +916,7 @@ relevant Architecture lifecycle/security invariants.
 | Gate ID | Authority                                                                             | Production path / concrete risk                                                              | Required behavior                                                   | Exact required proof                                                                                           | Classification | Status            |
 | ------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------- | ----------------- |
 | M3-R3-1 | M3-F02; active plan §4.6; ADR 0008; Architecture lifecycle/security invariants        | Paths or symlinks could escape the explicit workspace.                                       | Enforce workspace containment and symlink safety.                   | Temporary filesystem containment, traversal, and symlink-escape tests with no escaped access.                  | blocking       | PASS              |
-| M3-R3-2 | M3-F02; active plan §4.6; ADR 0008; Architecture lifecycle/security invariants        | Create/replace could race path changes or expose partial writes.                             | Use atomic create/replace with TOCTOU-safe handling.                | Temporary filesystem atomic-create/replace and raced-path evidence; no partial or redirected write.            | blocking       | PLANNED — NOT RUN |
+| M3-R3-2 | M3-F02; active plan §4.6; ADR 0008; ADR 0016; Architecture lifecycle/security invariants | Create/write publication could race path changes or expose partial writes.                   | Use fs-safe-backed atomic create/write; retain strict R3A path rules. | Temporary filesystem create/write evidence: no clobber, no partial destination, no implicit parent, and no redirected access. | blocking       | PLANNED — NOT RUN |
 | M3-R3-3 | M3-F04; active plan §§4.6, 4.11; ADR 0006; ADR 0008                                   | Timeout or cancellation could race only the returned promise while underlying I/O continues. | Propagate abort to underlying I/O and produce one terminal outcome. | Abort-aware fake I/O proves underlying operation observes cancellation and cannot later complete successfully. | blocking       | PLANNED — NOT RUN |
 | M3-R3-4 | M3-F04; active plan §4.11; ADR 0006; ADR 0008                                         | Post-start side effects could be reported as safely rolled back.                             | Classify post-start ambiguous effects as uncertain.                 | Fault-injected side-effect fake proves uncertain terminal evidence and no replay.                              | blocking       | PLANNED — NOT RUN |
 | M3-R3-5 | M3-F06; active plan §§4.6, 4.11; ADR 0006; Architecture lifecycle/security invariants | SQLite could close while runtime/tool work remains active.                                   | Cancel and drain active work before storage close.                  | Ordered shutdown fake records cancellation, drain, cleanup, then storage close; asserts close is last.         | blocking       | PLANNED — NOT RUN |
@@ -955,10 +944,10 @@ Scope:
 stable-filesystem workspace containment and symlink safety only
 ```
 
-M3-F02 remains open because M3-R3-2 atomic create/replace and TOCTOU-safe
+M3-F02 remains open because M3-R3-2 fs-safe create/write publication and TOCTOU-safe
 handling are not yet closed.
 
-**Next execution checkpoint:** M3-R3B — Atomic create/replace and TOCTOU safety (M3-R3-2)
+**Next execution checkpoint:** M3-R3B — fs-safe create/write publication and TOCTOU safety (M3-R3-2)
 
 ### M3-R4 — Lifecycle journal, Gemini continuation, and controlled verification
 
@@ -1043,7 +1032,7 @@ argument/result validation
 visibility and invocation policy
 approval allow/deny/expiry/unavailable/cancel/drift/reuse
 workspace containment, protected paths, symlinks, bounded I/O
-atomic create/replace and cleanup
+fs-safe atomic create/write publication and cleanup ownership
 parallel-read and sequential-mixed scheduling
 original-order outcomes
 timeout, cancellation, failure, uncertain outcome, no replay
