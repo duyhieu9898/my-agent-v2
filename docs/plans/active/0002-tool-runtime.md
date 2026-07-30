@@ -857,6 +857,30 @@ reachability or an authority violation:
 
 **Mapped findings:** M3-F01 only.
 **Next execution checkpoint:** M3-R3B — Atomic create/replace and TOCTOU safety (M3-R3-2)
+
+M3-R3BP plan synchronization for M3-R3-2:
+
+```text
+Implementation decision: adopt @openclaw/fs-safe@0.5.0 as the public,
+root-bounded workspace filesystem safety implementation.
+
+Native mode: require on the supported Linux production path. Unavailable
+native enforcement fails closed; there is no Node fs fallback.
+
+Integration boundary: a project-owned WorkspaceFilesystem interface is shared
+by WorkspacePolicy and the workspace tools. The platform adapter owns fs-safe
+Root creation, configured safety defaults, operation mapping, and stable
+AppError translation. Public package semantics are trusted; local tests prove
+the project integration only.
+
+Removal: delete the handwritten physical containment/symlink traversal and the
+workspace tool temporary-file, rename, and cleanup implementation once the
+adapter is wired. Keep only project-owned lexical target normalization and
+protected-path policy rules.
+
+Gate status: M3-R3-2 remains PLANNED — NOT RUN pending implementation and its
+bounded ChatGPT audit. This synchronization does not change acceptance status.
+```
 **Status:** CLOSED — PASS
 **Implementation locators:**
 
