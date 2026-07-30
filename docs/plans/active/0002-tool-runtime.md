@@ -779,7 +779,7 @@ Current accepted independent closure-audit findings:
 | `M3-F06` | `DECISION VIOLATION`       | shutdown does not cancel and drain active runtime/tool work before storage close                                                                                                                            |
 | `M3-F07` | `MISSING CLOSURE EVIDENCE` | controlled verifier does not prove the required denial, expiry, cancellation, uncertainty, replay, transcript, journal, checkpoint, finalization, usage, and cleanup matrix                                 |
 
-propagation only; it did not close post-start side-effect certainty.
+M3-F04 is closed by the accepted M3-R3-3 and M3-R3-4 closure evidence.
 
 Additional P2:
 
@@ -787,7 +787,8 @@ Additional P2:
 - richer paged filesystem APIs are not required for this slice;
 - persistent approvals, allowlists, and restart recovery require later decisions;
 - strong sandbox is required before broad shell or arbitrary mutation;
-- a richer event framework is not a substitute for closing observable M3 behavior.
+- a richer event framework is not a substitute for closing observable M3 behavior;
+- modularize oversized ToolRuntime and AgentRuntime test files by contract boundary after M3-R3-4 synchronization; preserve test semantics and accepted closure evidence.
 
 No unresolved Architecture/ADR blocker is known at planning completion. This plan locks a narrow task-local product slice within accepted boundaries. Promote a P2 only for direct decision violation or production regression.
 
@@ -1013,27 +1014,22 @@ M3-R3C-F01: CLOSED — PASS
 **Accepted closure verdict:** PASS — eligible for synchronization
 **Mapped finding:** M3-F04 only.
 
-#### Outcome and current finding
+#### Outcome and historical finding
 
-M3-R3-4 closes only the residual M3-F04 meaning: post-start side-effect
-certainty and uncertain outcomes remain incomplete.
+M3-R3-4 closed the residual M3-F04 finding regarding post-start side-effect certainty and uncertain outcome classification.
 
-M3-R3-3 closed abort propagation, one-terminal resolution, and late-success
-suppression, but did not establish an authoritative side-effect certainty
-boundary.
+Before M3-R3-4:
 
-The current runtime emits `tool.started` before `registry.execute()` invokes
-the implementation. The current side-effecting classifier treats every error
-after that runtime dispatch point as outcome-uncertain. Therefore `tool.started`
-is not authoritative proof that implementation I/O began, and the runtime
-cannot distinguish a pre-mutation implementation failure from a failure after
-an external effect became possible.
+- `tool.started` was emitted before implementation-owned I/O authority;
+- side-effecting failures after dispatch were classified too broadly;
+- `TOOL_OUTCOME_UNCERTAIN` was not consistently the primary code.
 
-An outcome may have `terminalState` `outcome-uncertain` while retaining a
-primary cause code such as `TOOL_CANCELLED` or `TOOL_EXECUTION_TIMEOUT`.
-M3-R3-4 requires `TOOL_OUTCOME_UNCERTAIN` to be the primary externally
-consumed classification, with the original cause retained only as safe
-`causeCode` metadata.
+After accepted closure:
+
+- `markIoStarted()` is implementation-owned and authoritative;
+- `markSideEffectPossible()` is the uncertainty boundary;
+- pre-effect and post-effect failures are distinguished;
+- uncertain outcomes use `TOOL_OUTCOME_UNCERTAIN` plus safe `causeCode`.
 
 #### Locked invocation phase model
 
@@ -1077,18 +1073,18 @@ side-effect-started event is required for M3-R3-4.
 1. Admission, validation, policy, approval, execution-context or other pre-I/O
    failures: `terminalState = failed-before-known-side-effect`, event =
    `tool.failed`, code = original normalized safe code.
-2. Explicit cancellation before side-effect-possible: `terminalState =
-cancelled-with-no-known-side-effect`, event = `tool.cancelled`, code =
-   `TOOL_CANCELLED`.
+2. Explicit cancellation before side-effect-possible:
+   `terminalState = cancelled-with-no-known-side-effect`, event = `tool.cancelled`,
+   code = `TOOL_CANCELLED`.
 3. Timeout or implementation failure before side-effect-possible:
    `terminalState = failed-before-known-side-effect`, event = `tool.failed`,
    code = `TOOL_EXECUTION_TIMEOUT`, `TOOL_IMPLEMENTATION_FAILED`, or another
    applicable safe normalized code.
 4. Validated successful result: `terminalState = completed`, event =
    `tool.completed`.
-5. Any non-success after side-effect-possible: `terminalState =
-outcome-uncertain`, event = `tool.failed`, code = `TOOL_OUTCOME_UNCERTAIN`,
-   `causeCode` = original normalized cause when safely representable.
+5. Any non-success after side-effect-possible:
+   `terminalState = outcome-uncertain`, event = `tool.failed`, code =
+   `TOOL_OUTCOME_UNCERTAIN`, `causeCode` = safe normalized original cause.
 6. First terminal resolution wins. Late completion, error, cancellation,
    timeout, marker invocation, or event emission cannot create a second terminal
    outcome.
@@ -1146,7 +1142,7 @@ All gates below are CLOSED — PASS.
 ##### M3-R3-4-G1 — Pre-start certainty
 
 **Status:** PASS
-**Evidence locator:** [tool-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/tools/tool-runtime.test.ts)
+**Evidence locator:** `cfc5717e00d8b9339a9788b72267c257acd69672` — `src/tools/tool-runtime.test.ts`; test: pre-start admission matrix
 
 **Authority:** ADR 0008 timeout/cancellation taxonomy; active plan §§4.5 and 4.11.
 
@@ -1166,7 +1162,7 @@ correct terminal event family.
 ##### M3-R3-4-G2 — Authoritative implementation start
 
 **Status:** PASS
-**Evidence locator:** [tool-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/tools/tool-runtime.test.ts#L3114-L3236)
+**Evidence locator:** `c17eb05ae95752aa433140b6a8251b366fb22926` plus `76fb8af8b9697248e8d47b4321564ace0a7e273e` — `src/tools/tool-runtime.test.ts`; test: exact marker-authority test
 
 **Authority:** ADR 0008 execution lifecycle; active plan §4.11.
 
@@ -1185,7 +1181,7 @@ use the start marker before their first filesystem I/O.
 ##### M3-R3-4-G3 — Post-start pre-effect failure
 
 **Status:** PASS
-**Evidence locator:** [tool-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/tools/tool-runtime.test.ts)
+**Evidence locator:** `cfc5717e00d8b9339a9788b72267c257acd69672` — `src/tools/workspace-tools.test.ts`; test: production workspace-write post-start pre-effect failure test
 
 **Authority:** ADR 0008 certainty taxonomy; M3-F04.
 
@@ -1206,7 +1202,7 @@ failure; event = `tool.failed`.
 ##### M3-R3-4-G4 — Post-effect implementation failure
 
 **Status:** PASS
-**Evidence locator:** [tool-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/tools/tool-runtime.test.ts)
+**Evidence locator:** `cfc5717e00d8b9339a9788b72267c257acd69672` — `src/tools/tool-runtime.test.ts`; test: production workspace-write post-effect failure evidence
 
 **Authority:** ADR 0008 uncertain outcomes; M3-F04; active plan §4.11.
 
@@ -1226,7 +1222,7 @@ classification path.
 ##### M3-R3-4-G5 — Post-effect cancellation
 
 **Status:** PASS
-**Evidence locator:** [tool-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/tools/tool-runtime.test.ts)
+**Evidence locator:** `cfc5717e00d8b9339a9788b72267c257acd69672` — `src/tools/tool-runtime.test.ts`; test: post-effect cancellation and late-success suppression evidence
 
 **Authority:** ADR 0006 cancellation; ADR 0008 uncertain outcomes; accepted
 M3-R3-3.
@@ -1247,7 +1243,7 @@ outcome-uncertain; primary code is `TOOL_OUTCOME_UNCERTAIN`; `causeCode` is
 ##### M3-R3-4-G6 — Post-effect timeout
 
 **Status:** PASS
-**Evidence locator:** [tool-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/tools/tool-runtime.test.ts#L3238-L3388)
+**Evidence locator:** `c17eb05ae95752aa433140b6a8251b366fb22926` — `src/tools/tool-runtime.test.ts`; test: exact timeout/late-success test
 
 **Authority:** ADR 0008 timeout and uncertainty; active plan §4.11.
 
@@ -1265,7 +1261,7 @@ TOOL_OUTCOME_UNCERTAIN`; `error.causeCode = TOOL_EXECUTION_TIMEOUT`; one
 ##### M3-R3-4-G7 — Exactly one terminal outcome
 
 **Status:** PASS
-**Evidence locator:** [tool-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/tools/tool-runtime.test.ts#L3390-L3799)
+**Evidence locator:** `c17eb05ae95752aa433140b6a8251b366fb22926` plus `76fb8af8b9697248e8d47b4321564ace0a7e273e` — `src/tools/tool-runtime.test.ts`; test: first-terminal-wins matrix and active-invocation remediation
 
 **Authority:** ADR 0006 exactly-once terminalization; ADR 0008 one terminal
 result; accepted M3-R3-3.
@@ -1285,7 +1281,7 @@ event emitter.
 ##### M3-R3-4-G8 — No automatic replay
 
 **Status:** PASS
-**Evidence locator:** [agent-runtime.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/agents/agent-runtime.test.ts#L2740-L2882)
+**Evidence locator:** `cfc5717e00d8b9339a9788b72267c257acd69672` — `src/agents/agent-runtime.test.ts`; test: exact no-replay integration test
 
 **Authority:** ADR 0006 Checkpoint authority; ADR 0008 replay prohibition;
 active plan §4.9.
@@ -1306,7 +1302,7 @@ tool-cycle path.
 ##### M3-R3-4-G9 — Production composition
 
 **Status:** PASS
-**Evidence locator:** [create-app.test.ts](file:///home/hieund/Downloads/my-agent-v2/src/bootstrap/create-app.test.ts) & [create-app.ts](file:///home/hieund/Downloads/my-agent-v2/src/bootstrap/create-app.ts)
+**Evidence locator:** `e3e39f524fc596840dd509debe665a0bb03312cc` — `src/bootstrap/create-app.ts` & `src/bootstrap/create-app.test.ts`; test: direct source composition plus observable composition test
 
 **Authority:** Architecture §§13–14; ADR 0008; Implementation Plan Milestone 3.
 
