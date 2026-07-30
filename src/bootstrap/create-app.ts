@@ -54,7 +54,7 @@ export type App = {
 
 /** @internal Test-only, read-only composition evidence. */
 export type CreateAppCompositionObservation = Readonly<{
-  workspaceFilesystemKind: "FsSafeWorkspaceFilesystem";
+  workspaceFilesystemIsFsSafe: boolean;
   registeredToolNames: readonly string[];
   registryFingerprint: string;
   policyFingerprint: string;
@@ -300,10 +300,8 @@ export function createApp(
 
   if (options.testHooks?.observeComposition) {
     const observation: CreateAppCompositionObservation = Object.freeze({
-      workspaceFilesystemKind:
-        workspaceFilesystem instanceof FsSafeWorkspaceFilesystem
-          ? "FsSafeWorkspaceFilesystem"
-          : "FsSafeWorkspaceFilesystem",
+      workspaceFilesystemIsFsSafe:
+        workspaceFilesystem instanceof FsSafeWorkspaceFilesystem,
       registeredToolNames: Object.freeze(
         toolRegistry.list().map((tool) => tool.name),
       ),

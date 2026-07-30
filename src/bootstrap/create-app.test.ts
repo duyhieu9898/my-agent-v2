@@ -69,9 +69,7 @@ describe("createApp", () => {
     expect(observations).toHaveLength(1);
     const observation = observations[0]!;
 
-    expect(observation.workspaceFilesystemKind).toBe(
-      "FsSafeWorkspaceFilesystem",
-    );
+    expect(observation.workspaceFilesystemIsFsSafe).toBe(true);
 
     expect(observation.registeredToolNames).toEqual([
       "workspace.list",
