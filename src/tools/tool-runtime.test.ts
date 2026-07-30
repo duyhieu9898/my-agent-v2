@@ -1846,6 +1846,165 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       expect(executions).toBe(0);
     });
 
+    it("aborts the active invocation signal on parent cancellation and suppresses late success", async () => {
+      const ids = createSequentialIdFactory();
+      const registry = new ToolRegistry();
+      let receivedSignal: AbortSignal | undefined;
+      let releaseSuccess!: () => void;
+      let successPathExecuted = false;
+      let started!: () => void;
+      const startedPromise = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      let cancelled!: () => void;
+      const cancelledPromise = new Promise<void>((resolve) => {
+        cancelled = resolve;
+      });
+      const successBarrier = new Promise<void>((resolve) => {
+        releaseSuccess = resolve;
+      });
+      registry.register(
+        r2Tool({
+          name: "test.abort_aware_read",
+          execute: async (args, context) => {
+            receivedSignal = context.signal;
+            started();
+            await new Promise<void>((resolve, reject) => {
+              const onAbort = () => {
+                cancelled();
+                reject(context.signal?.reason);
+              };
+              context.signal?.addEventListener("abort", onAbort, {
+                once: true,
+              });
+              successBarrier.then(() => {
+                context.signal?.removeEventListener("abort", onAbort);
+                resolve();
+              });
+            });
+            successPathExecuted = true;
+            return { path: args.path };
+          },
+        }),
+      );
+      registry.freeze();
+      const runtime = new ToolRuntime(
+        registry,
+        { evaluateInvocation: async (_tool: ToolDescriptor, args: any) => allowedPolicy(args) } as any,
+        new ApprovalCoordinator(ids),
+      );
+      const context = r2Context(ids);
+      const controller = new AbortController();
+      const events: string[] = [];
+      runtime.onEvent((event) => events.push(event.type));
+      const execution = runtime.executeBatch(
+        [r2Request(context, 1, "test.abort_aware_read", "A")],
+        context,
+        controller.signal,
+      );
+
+      await startedPromise;
+      expect(receivedSignal).toBeDefined();
+      expect(receivedSignal).not.toBe(controller.signal);
+      controller.abort();
+      await cancelledPromise;
+      const outcomes = await execution;
+      releaseSuccess();
+      await Promise.resolve();
+
+      expect(receivedSignal?.aborted).toBe(true);
+      expect(successPathExecuted).toBe(false);
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]).toMatchObject({
+        ok: false,
+        terminalState: "cancelled-with-no-known-side-effect",
+        error: { code: "TOOL_CANCELLED" },
+      });
+      expect(events.filter((event) => event === "tool.cancelled")).toHaveLength(1);
+      expect(events.filter((event) => event === "tool.completed")).toHaveLength(0);
+    });
+
+    it("aborts the active invocation signal on timeout and suppresses late success", async () => {
+      vi.useFakeTimers();
+      try {
+        const ids = createSequentialIdFactory();
+        const registry = new ToolRegistry();
+        let receivedSignal: AbortSignal | undefined;
+        let releaseSuccess!: () => void;
+        let successPathExecuted = false;
+        let started!: () => void;
+        const startedPromise = new Promise<void>((resolve) => {
+          started = resolve;
+        });
+        let cancelled!: () => void;
+        const cancelledPromise = new Promise<void>((resolve) => {
+          cancelled = resolve;
+        });
+        const successBarrier = new Promise<void>((resolve) => {
+          releaseSuccess = resolve;
+        });
+        registry.register({
+          ...r2Tool({
+            name: "test.timeout_aware_read",
+            execute: async (args, context) => {
+              receivedSignal = context.signal;
+              started();
+              await new Promise<void>((resolve, reject) => {
+                const onAbort = () => {
+                  cancelled();
+                  reject(context.signal?.reason);
+                };
+                context.signal?.addEventListener("abort", onAbort, {
+                  once: true,
+                });
+                successBarrier.then(() => {
+                  context.signal?.removeEventListener("abort", onAbort);
+                  resolve();
+                });
+              });
+              successPathExecuted = true;
+              return { path: args.path };
+            },
+          }),
+          timeoutMs: 25,
+        });
+        registry.freeze();
+        const runtime = new ToolRuntime(
+          registry,
+          { evaluateInvocation: async (_tool: ToolDescriptor, args: any) => allowedPolicy(args) } as any,
+          new ApprovalCoordinator(ids),
+          { toolTimeoutMs: 25 },
+        );
+        const context = r2Context(ids);
+        const events: string[] = [];
+        runtime.onEvent((event) => events.push(event.type));
+        const execution = runtime.executeBatch(
+          [r2Request(context, 1, "test.timeout_aware_read", "A")],
+          context,
+        );
+
+        await startedPromise;
+        await vi.advanceTimersByTimeAsync(25);
+        await cancelledPromise;
+        const outcomes = await execution;
+        releaseSuccess();
+        await Promise.resolve();
+
+        expect(receivedSignal?.aborted).toBe(true);
+        expect(successPathExecuted).toBe(false);
+        expect(outcomes).toHaveLength(1);
+        expect(outcomes[0]).toMatchObject({
+          ok: false,
+          terminalState: "failed-before-known-side-effect",
+          error: { code: "TOOL_EXECUTION_TIMEOUT" },
+        });
+        expect(events.filter((event) => event === "tool.failed")).toHaveLength(1);
+        expect(events.filter((event) => event === "tool.completed")).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("admits the whole batch before bounded read implementations start and preserves request order", async () => {
       const ids = createSequentialIdFactory();
       const registry = new ToolRegistry();

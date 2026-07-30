@@ -22,6 +22,7 @@ const workspaceWriteTextTool =
 function context(
   workspaceRoot: string,
   targetPath: string,
+  signal?: AbortSignal,
 ): ToolExecutionContext {
   return {
     agentId: "agent_primary" as any,
@@ -32,6 +33,7 @@ function context(
     outputLimits: {},
     policyConstraints: {},
     sandboxProfile: "host-workspace-v1",
+    ...(signal ? { signal } : {}),
   };
 }
 
@@ -199,5 +201,57 @@ describe("workspace tools containment", () => {
       ),
     ).rejects.toMatchObject({ code: "TOOL_IMPLEMENTATION_FAILED" });
     expect(writeTextCalls).toBe(0);
+  });
+
+  it("passes one invocation signal through every workspace operation", async () => {
+    const received: AbortSignal[] = [];
+    const filesystem: WorkspaceFilesystem = {
+      preflight: async () => undefined,
+      list: async (_root, _path, signal) => {
+        received.push(signal!);
+        return [];
+      },
+      readTextChunk: async (_root, _path, _offset, _max, signal) => {
+        received.push(signal!);
+        return { text: "", bytesRead: 0, fileSizeBytes: 0 };
+      },
+      inspectTextForWrite: async (_root, _path, signal) => {
+        received.push(signal!);
+        return { priorState: "none" };
+      },
+      createText: async (_root, _path, _content, signal) => {
+        received.push(signal!);
+      },
+      writeText: async (_root, _path, _content, signal) => {
+        received.push(signal!);
+      },
+    };
+    const controller = new AbortController();
+    const invocationContext = context("/workspace", "file.txt", controller.signal);
+
+    await createWorkspaceListTool(filesystem).execute(
+      { path: "file.txt" },
+      invocationContext,
+    );
+    await createWorkspaceReadTextTool(filesystem).execute(
+      { path: "file.txt" },
+      invocationContext,
+    );
+    await createWorkspaceWriteTextTool(filesystem).execute(
+      { path: "file.txt", content: "new", mode: "write" },
+      invocationContext,
+    );
+    await createWorkspaceWriteTextTool(filesystem).execute(
+      { path: "file.txt", content: "new", mode: "create" },
+      invocationContext,
+    );
+
+    expect(received).toEqual([
+      controller.signal,
+      controller.signal,
+      controller.signal,
+      controller.signal,
+      controller.signal,
+    ]);
   });
 });

@@ -41,6 +41,7 @@ export function createWorkspaceListTool(
       const entries = await workspaceFilesystem.list(
         context.workspaceRoot,
         context.targetPath,
+        context.signal,
       );
       entries.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -93,6 +94,7 @@ export function createWorkspaceReadTextTool(
         context.targetPath,
         offsetBytes,
         maxBytes,
+        context.signal,
       );
       const eof = offsetBytes + chunk.bytesRead >= chunk.fileSizeBytes;
 
@@ -156,17 +158,20 @@ export function createWorkspaceWriteTextTool(
         previousState = await workspaceFilesystem.inspectTextForWrite(
           context.workspaceRoot,
           context.targetPath,
+          context.signal,
         );
         await workspaceFilesystem.writeText(
           context.workspaceRoot,
           context.targetPath,
           args.content,
+          context.signal,
         );
       } else {
         await workspaceFilesystem.createText(
           context.workspaceRoot,
           context.targetPath,
           args.content,
+          context.signal,
         );
       }
 

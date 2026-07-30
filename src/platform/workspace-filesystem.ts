@@ -56,11 +56,16 @@ export class FsSafeWorkspaceFilesystem implements WorkspaceFilesystem {
   public async list(
     workspaceRoot: string,
     targetPath: string,
+    signal?: AbortSignal,
   ): Promise<WorkspaceEntry[]> {
+    throwIfAborted(signal);
     await this.assertStrictPath(workspaceRoot, targetPath);
+    throwIfAborted(signal);
     const safeRoot = await this.getRoot(workspaceRoot);
+    throwIfAborted(signal);
     try {
       const entries = await safeRoot.list(targetPath, { withFileTypes: true });
+      throwIfAborted(signal);
       return entries.map((entry) => ({
         name: entry.name,
         kind: entry.isDirectory ? "directory" : "file",
@@ -75,12 +80,17 @@ export class FsSafeWorkspaceFilesystem implements WorkspaceFilesystem {
     targetPath: string,
     offsetBytes: number,
     maxBytes: number,
+    signal?: AbortSignal,
   ): Promise<WorkspaceTextChunk> {
+    throwIfAborted(signal);
     await this.assertStrictPath(workspaceRoot, targetPath);
+    throwIfAborted(signal);
     const safeRoot = await this.getRoot(workspaceRoot);
+    throwIfAborted(signal);
     try {
       const opened = await safeRoot.open(targetPath);
       try {
+        throwIfAborted(signal);
         this.requireRegularFile(opened.stat.isFile());
         const buffer = Buffer.alloc(maxBytes);
         const { bytesRead } = await opened.handle.read(
@@ -89,6 +99,7 @@ export class FsSafeWorkspaceFilesystem implements WorkspaceFilesystem {
           maxBytes,
           offsetBytes,
         );
+        throwIfAborted(signal);
         return {
           text: buffer.subarray(0, bytesRead).toString("utf8"),
           bytesRead,
@@ -105,18 +116,28 @@ export class FsSafeWorkspaceFilesystem implements WorkspaceFilesystem {
   public async inspectTextForWrite(
     workspaceRoot: string,
     targetPath: string,
+    signal?: AbortSignal,
   ): Promise<WorkspaceWritePriorState> {
+    throwIfAborted(signal);
     await this.assertStrictPath(workspaceRoot, targetPath);
+    throwIfAborted(signal);
     const safeRoot = await this.getRoot(workspaceRoot);
+    throwIfAborted(signal);
     try {
       const opened = await safeRoot.open(targetPath);
       try {
+        throwIfAborted(signal);
         this.requireRegularFile(opened.stat.isFile());
         const hash = createHash("sha256");
-        const stream = opened.handle.createReadStream({ autoClose: false });
+        const stream = opened.handle.createReadStream({
+          autoClose: false,
+          signal,
+        });
         for await (const chunk of stream) {
           hash.update(chunk);
+          throwIfAborted(signal);
         }
+        throwIfAborted(signal);
         return { priorState: "existed", previousHash: hash.digest("hex") };
       } finally {
         await opened.handle.close();
@@ -133,11 +154,16 @@ export class FsSafeWorkspaceFilesystem implements WorkspaceFilesystem {
     workspaceRoot: string,
     targetPath: string,
     content: string,
+    signal?: AbortSignal,
   ): Promise<void> {
+    throwIfAborted(signal);
     await this.assertStrictPath(workspaceRoot, targetPath);
+    throwIfAborted(signal);
     const safeRoot = await this.getRoot(workspaceRoot);
+    throwIfAborted(signal);
     try {
       await safeRoot.create(targetPath, content, { mkdir: false });
+      throwIfAborted(signal);
     } catch (error) {
       throw mapFsSafeError(error);
     }
@@ -147,14 +173,19 @@ export class FsSafeWorkspaceFilesystem implements WorkspaceFilesystem {
     workspaceRoot: string,
     targetPath: string,
     content: string,
+    signal?: AbortSignal,
   ): Promise<void> {
+    throwIfAborted(signal);
     await this.assertStrictPath(workspaceRoot, targetPath);
+    throwIfAborted(signal);
     const safeRoot = await this.getRoot(workspaceRoot);
+    throwIfAborted(signal);
     try {
       await safeRoot.write(targetPath, content, {
         mkdir: false,
         overwrite: true,
       });
+      throwIfAborted(signal);
     } catch (error) {
       throw mapFsSafeError(error);
     }
@@ -197,6 +228,12 @@ export class FsSafeWorkspaceFilesystem implements WorkspaceFilesystem {
         "Path is not a regular file",
       );
     }
+  }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    signal.throwIfAborted();
   }
 }
 

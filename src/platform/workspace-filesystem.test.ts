@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getFsSafeNativeConfig } from "./fs-safe.js";
 import { FsSafeWorkspaceFilesystem } from "./workspace-filesystem.js";
@@ -127,5 +127,31 @@ describe("FsSafeWorkspaceFilesystem", () => {
     ).rejects.toMatchObject({
       code: "TOOL_SANDBOX_UNAVAILABLE",
     });
+  });
+
+  it("does not start workspace platform operations for a pre-aborted signal", async () => {
+    const root = workspace();
+    const filesystem = new FsSafeWorkspaceFilesystem();
+    const getRoot = vi.spyOn(filesystem as any, "getRoot");
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(filesystem.list(root, ".", controller.signal)).rejects.toBe(
+      controller.signal.reason,
+    );
+    await expect(
+      filesystem.readTextChunk(root, "file.txt", 0, 1, controller.signal),
+    ).rejects.toBe(controller.signal.reason);
+    await expect(
+      filesystem.inspectTextForWrite(root, "file.txt", controller.signal),
+    ).rejects.toBe(controller.signal.reason);
+    await expect(
+      filesystem.createText(root, "file.txt", "x", controller.signal),
+    ).rejects.toBe(controller.signal.reason);
+    await expect(
+      filesystem.writeText(root, "file.txt", "x", controller.signal),
+    ).rejects.toBe(controller.signal.reason);
+
+    expect(getRoot).not.toHaveBeenCalled();
   });
 });
