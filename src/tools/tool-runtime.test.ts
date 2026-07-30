@@ -2276,5 +2276,838 @@ describe("ToolRuntime — Invocation Snapshot, Identity & Approval Binding", () 
       expect(events.filter((event) => event === "tool.failed")).toHaveLength(1);
       expect(events).not.toContain("tool.completed");
     });
+
+    describe("G1 remaining pre-start admission matrix", () => {
+      it("handles invalid arguments admission failure before I/O or start", async () => {
+        let executions = 0;
+        let fsCalls = 0;
+        const filesystem: WorkspaceFilesystem = {
+          preflight: async () => undefined,
+          list: async () => {
+            fsCalls++;
+            return [];
+          },
+          readTextChunk: async () => {
+            fsCalls++;
+            return { text: "", bytesRead: 0, fileSizeBytes: 0 };
+          },
+          inspectTextForWrite: async () => {
+            fsCalls++;
+            return { priorState: "none" };
+          },
+          createText: async () => {
+            fsCalls++;
+            executions++;
+          },
+          writeText: async () => {
+            fsCalls++;
+            executions++;
+          },
+        };
+        const { runtime, context } = writeRuntime(filesystem);
+        const events: Array<{ type: string; toolCallId?: string }> = [];
+        runtime.onEvent((e) => events.push(e));
+
+        const [outcome] = await runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_g1_invalid"),
+              modelCallId: context.modelCallId,
+              ordinal: 1,
+              toolName: "workspace.write_text",
+              rawArguments: { path: 123 as any, content: "x", mode: "create" },
+            },
+          ],
+          context,
+        );
+
+        expect(executions).toBe(0);
+        expect(fsCalls).toBe(0);
+        expect(outcome).toMatchObject({
+          terminalState: "failed-before-known-side-effect",
+          error: { code: "TOOL_ARGUMENTS_INVALID" },
+        });
+        expect(
+          events.filter((e) =>
+            ["tool.started", "tool.completed", "tool.failed", "tool.cancelled"].includes(e.type),
+          ),
+        ).toEqual([
+          expect.objectContaining({ type: "tool.failed", toolCallId: "tcall_g1_invalid" }),
+        ]);
+      });
+
+      it("handles policy denial before I/O or start", async () => {
+        let fsCalls = 0;
+        const filesystem: WorkspaceFilesystem = {
+          preflight: async () => undefined,
+          list: async () => [],
+          readTextChunk: async () => {
+            fsCalls++;
+            return { text: "", bytesRead: 0, fileSizeBytes: 0 };
+          },
+          inspectTextForWrite: async () => ({ priorState: "none" }),
+          createText: async () => {},
+          writeText: async () => {},
+        };
+        const registry = new ToolRegistry();
+        registry.register(createWorkspaceReadTextTool(filesystem));
+        registry.freeze();
+        const ids = createSequentialIdFactory();
+        const runtime = new ToolRuntime(
+          registry,
+          new WorkspacePolicy(filesystem),
+          new ApprovalCoordinator(ids),
+        );
+        const context: ToolBatchContext = {
+          agentId: createAgentId("primary"),
+          sessionKey: createSessionKey("agent:primary:g1_policy"),
+          sessionId: ids.nextSessionId(),
+          runId: ids.nextRunId(),
+          attemptId: ids.nextAttemptId(),
+          modelCallId: ids.nextModelCallId(),
+          workspaceRoot: "/workspace",
+          sandboxProfile: "host-workspace-v1",
+          totalRunToolCalls: 0,
+        };
+        const events: Array<{ type: string; toolCallId?: string }> = [];
+        runtime.onEvent((e) => events.push(e));
+
+        const [outcome] = await runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_g1_policy"),
+              modelCallId: context.modelCallId,
+              ordinal: 1,
+              toolName: "workspace.read_text",
+              rawArguments: { path: ".env" },
+            },
+          ],
+          context,
+        );
+
+        expect(fsCalls).toBe(0);
+        expect(outcome).toMatchObject({
+          terminalState: "failed-before-known-side-effect",
+          error: { code: "TOOL_POLICY_DENIED" },
+        });
+        expect(
+          events.filter((e) =>
+            ["tool.started", "tool.completed", "tool.failed", "tool.cancelled"].includes(e.type),
+          ),
+        ).toEqual([
+          expect.objectContaining({ type: "tool.failed", toolCallId: "tcall_g1_policy" }),
+        ]);
+      });
+
+      it("handles approval denial before I/O or start", async () => {
+        let executions = 0;
+        let fsCalls = 0;
+        const ids = createSequentialIdFactory();
+        const filesystem: WorkspaceFilesystem = {
+          preflight: async () => undefined,
+          list: async () => [],
+          readTextChunk: async () => ({ text: "", bytesRead: 0, fileSizeBytes: 0 }),
+          inspectTextForWrite: async () => ({ priorState: "none" }),
+          createText: async () => {
+            fsCalls++;
+            executions++;
+          },
+          writeText: async () => {
+            fsCalls++;
+            executions++;
+          },
+        };
+        const registry = new ToolRegistry();
+        registry.register(createWorkspaceWriteTextTool(filesystem));
+        registry.freeze();
+        const approvals = new ApprovalCoordinator(ids);
+        const runtime = new ToolRuntime(
+          registry,
+          new WorkspacePolicy(filesystem),
+          approvals,
+        );
+        const context: ToolBatchContext = {
+          agentId: createAgentId("primary"),
+          sessionKey: createSessionKey("agent:primary:g1_deny"),
+          sessionId: ids.nextSessionId(),
+          runId: ids.nextRunId(),
+          attemptId: ids.nextAttemptId(),
+          modelCallId: ids.nextModelCallId(),
+          workspaceRoot: "/workspace",
+          sandboxProfile: "host-workspace-v1",
+          totalRunToolCalls: 0,
+        };
+        approvals.onRequest((binding) =>
+          approvals.resolveApproval(binding.approvalId, context.runId, "deny"),
+        );
+
+        const events: Array<{ type: string; toolCallId?: string }> = [];
+        runtime.onEvent((e) => events.push(e));
+
+        const [outcome] = await runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_g1_appr_deny"),
+              modelCallId: context.modelCallId,
+              ordinal: 1,
+              toolName: "workspace.write_text",
+              rawArguments: { path: "a.txt", content: "x", mode: "create" },
+            },
+          ],
+          context,
+        );
+
+        expect(executions).toBe(0);
+        expect(fsCalls).toBe(0);
+        expect(outcome).toMatchObject({
+          terminalState: "failed-before-known-side-effect",
+          error: { code: "TOOL_APPROVAL_DENIED" },
+        });
+        expect(
+          events.filter((e) =>
+            ["tool.started", "tool.completed", "tool.failed", "tool.cancelled"].includes(e.type),
+          ),
+        ).toEqual([
+          expect.objectContaining({ type: "tool.failed", toolCallId: "tcall_g1_appr_deny" }),
+        ]);
+      });
+
+      it("handles approval expiry using fake timers before I/O or start", async () => {
+        vi.useFakeTimers();
+        try {
+          let executions = 0;
+          let fsCalls = 0;
+          const ids = createSequentialIdFactory();
+          const filesystem: WorkspaceFilesystem = {
+            preflight: async () => undefined,
+            list: async () => [],
+            readTextChunk: async () => ({ text: "", bytesRead: 0, fileSizeBytes: 0 }),
+            inspectTextForWrite: async () => ({ priorState: "none" }),
+            createText: async () => {
+              fsCalls++;
+              executions++;
+            },
+            writeText: async () => {
+              fsCalls++;
+              executions++;
+            },
+          };
+          const registry = new ToolRegistry();
+          registry.register(createWorkspaceWriteTextTool(filesystem));
+          registry.freeze();
+          const approvals = new ApprovalCoordinator(ids);
+          const runtime = new ToolRuntime(
+            registry,
+            new WorkspacePolicy(filesystem),
+            approvals,
+          );
+          const context: ToolBatchContext = {
+            agentId: createAgentId("primary"),
+            sessionKey: createSessionKey("agent:primary:g1_exp"),
+            sessionId: ids.nextSessionId(),
+            runId: ids.nextRunId(),
+            attemptId: ids.nextAttemptId(),
+            modelCallId: ids.nextModelCallId(),
+            workspaceRoot: "/workspace",
+            sandboxProfile: "host-workspace-v1",
+            totalRunToolCalls: 0,
+          };
+          approvals.onRequest(() => {
+            vi.advanceTimersByTime(35000);
+          });
+
+          const events: Array<{ type: string; toolCallId?: string }> = [];
+          runtime.onEvent((e) => events.push(e));
+
+          const [outcome] = await runtime.executeBatch(
+            [
+              {
+                toolCallId: createToolCallId("tcall_g1_exp"),
+                modelCallId: context.modelCallId,
+                ordinal: 1,
+                toolName: "workspace.write_text",
+                rawArguments: { path: "a.txt", content: "x", mode: "create" },
+              },
+            ],
+            context,
+          );
+
+          expect(executions).toBe(0);
+          expect(fsCalls).toBe(0);
+          expect(outcome).toMatchObject({
+            terminalState: "failed-before-known-side-effect",
+            error: { code: "TOOL_APPROVAL_EXPIRED" },
+          });
+          expect(
+            events.filter((e) =>
+              ["tool.started", "tool.completed", "tool.failed", "tool.cancelled"].includes(e.type),
+            ),
+          ).toEqual([
+            expect.objectContaining({ type: "tool.failed", toolCallId: "tcall_g1_exp" }),
+          ]);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("handles approval cancellation before I/O or start", async () => {
+        let executions = 0;
+        let fsCalls = 0;
+        const ids = createSequentialIdFactory();
+        const filesystem: WorkspaceFilesystem = {
+          preflight: async () => undefined,
+          list: async () => [],
+          readTextChunk: async () => ({ text: "", bytesRead: 0, fileSizeBytes: 0 }),
+          inspectTextForWrite: async () => ({ priorState: "none" }),
+          createText: async () => {
+            fsCalls++;
+            executions++;
+          },
+          writeText: async () => {
+            fsCalls++;
+            executions++;
+          },
+        };
+        const registry = new ToolRegistry();
+        registry.register(createWorkspaceWriteTextTool(filesystem));
+        registry.freeze();
+        const approvals = new ApprovalCoordinator(ids);
+        const runtime = new ToolRuntime(
+          registry,
+          new WorkspacePolicy(filesystem),
+          approvals,
+        );
+        const context: ToolBatchContext = {
+          agentId: createAgentId("primary"),
+          sessionKey: createSessionKey("agent:primary:g1_cancel"),
+          sessionId: ids.nextSessionId(),
+          runId: ids.nextRunId(),
+          attemptId: ids.nextAttemptId(),
+          modelCallId: ids.nextModelCallId(),
+          workspaceRoot: "/workspace",
+          sandboxProfile: "host-workspace-v1",
+          totalRunToolCalls: 0,
+        };
+        approvals.onRequest(() => {
+          approvals.cancelPendingForRun(context.runId);
+        });
+
+        const events: Array<{ type: string; toolCallId?: string }> = [];
+        runtime.onEvent((e) => events.push(e));
+
+        const [outcome] = await runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_g1_cancel"),
+              modelCallId: context.modelCallId,
+              ordinal: 1,
+              toolName: "workspace.write_text",
+              rawArguments: { path: "a.txt", content: "x", mode: "create" },
+            },
+          ],
+          context,
+        );
+
+        expect(executions).toBe(0);
+        expect(fsCalls).toBe(0);
+        expect(outcome).toMatchObject({
+          terminalState: "cancelled-with-no-known-side-effect",
+          error: { code: "TOOL_CANCELLED" },
+        });
+        expect(
+          events.filter((e) =>
+            ["tool.started", "tool.completed", "tool.failed", "tool.cancelled"].includes(e.type),
+          ),
+        ).toEqual([
+          expect.objectContaining({ type: "tool.cancelled", toolCallId: "tcall_g1_cancel" }),
+        ]);
+      });
+
+      it("handles already-aborted signal before I/O or start", async () => {
+        let fsCalls = 0;
+        const filesystem: WorkspaceFilesystem = {
+          preflight: async () => undefined,
+          list: async () => [],
+          readTextChunk: async () => {
+            fsCalls++;
+            return { text: "data", bytesRead: 4, fileSizeBytes: 4 };
+          },
+          inspectTextForWrite: async () => ({ priorState: "none" }),
+          createText: async () => {},
+          writeText: async () => {},
+        };
+        const registry = new ToolRegistry();
+        registry.register(createWorkspaceReadTextTool(filesystem));
+        registry.freeze();
+        const ids = createSequentialIdFactory();
+        const runtime = new ToolRuntime(
+          registry,
+          new WorkspacePolicy(filesystem),
+          new ApprovalCoordinator(ids),
+        );
+        const context: ToolBatchContext = {
+          agentId: createAgentId("primary"),
+          sessionKey: createSessionKey("agent:primary:g1_aborted"),
+          sessionId: ids.nextSessionId(),
+          runId: ids.nextRunId(),
+          attemptId: ids.nextAttemptId(),
+          modelCallId: ids.nextModelCallId(),
+          workspaceRoot: "/workspace",
+          sandboxProfile: "host-workspace-v1",
+          totalRunToolCalls: 0,
+        };
+        const events: Array<{ type: string; toolCallId?: string }> = [];
+        runtime.onEvent((e) => events.push(e));
+
+        const controller = new AbortController();
+        controller.abort();
+
+        const [outcome] = await runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_g1_aborted"),
+              modelCallId: context.modelCallId,
+              ordinal: 1,
+              toolName: "workspace.read_text",
+              rawArguments: { path: "a.txt" },
+            },
+          ],
+          context,
+          controller.signal,
+        );
+
+        expect(fsCalls).toBe(0);
+        expect(outcome).toMatchObject({
+          terminalState: "cancelled-with-no-known-side-effect",
+          error: { code: "TOOL_CANCELLED" },
+        });
+        expect(
+          events.filter((e) =>
+            ["tool.started", "tool.completed", "tool.failed", "tool.cancelled"].includes(e.type),
+          ),
+        ).toEqual([
+          expect.objectContaining({ type: "tool.cancelled", toolCallId: "tcall_g1_aborted" }),
+        ]);
+      });
+    });
+
+    describe("G5 post-effect cancellation", () => {
+      it("classifies post-side-effect parent cancellation as outcome-uncertain", async () => {
+        let executions = 0;
+        let effectCount = 0;
+        const parentController = new AbortController();
+        let childAbortedInImpl = false;
+
+        const registry = new ToolRegistry();
+        registry.register({
+          name: "test.write_side_effect",
+          descriptorVersion: "1.0.0",
+          owningModule: "test",
+          description: "side effect tool",
+          argumentSchema: Type.Object({ path: Type.String() }),
+          resultSchema: Type.Object({ ok: Type.Boolean() }),
+          effectClassification: "side-effecting",
+          sensitivityClassification: "none",
+          executionTarget: "workspace",
+          sandboxRequirement: "host-workspace-v1",
+          timeoutMs: 5000,
+          cancellationSupport: true,
+          concurrencyTrait: "sequential",
+          idempotencyTrait: false,
+          approvalSummaryRenderer: () => "write",
+          redactionRules: [],
+          inputLimits: {},
+          outputLimits: {},
+          progressFingerprintVersion: "1.0.0",
+          execute: async (_args, context) => {
+            executions++;
+            context.markIoStarted();
+            context.markSideEffectPossible();
+            effectCount++;
+            parentController.abort();
+            childAbortedInImpl = Boolean(context.signal?.aborted);
+            throw new Error("interrupted side effect");
+          },
+        });
+        registry.freeze();
+
+        const ids = createSequentialIdFactory();
+        const approvals = new ApprovalCoordinator(ids);
+        const policy = {
+          evaluateInvocation: async (_t: any, args: any) => ({
+            decision: "require-approval",
+            reason: "approval required",
+            policyProfile: "test",
+            policyVersion: "1.0.0",
+            targetPath: args.path,
+            policyConstraints: {},
+            redactionMetadata: {},
+          }),
+        } as any;
+        const runtime = new ToolRuntime(registry, policy, approvals);
+        const context: ToolBatchContext = {
+          agentId: createAgentId("primary"),
+          sessionKey: createSessionKey("agent:primary:g5"),
+          sessionId: ids.nextSessionId(),
+          runId: ids.nextRunId(),
+          attemptId: ids.nextAttemptId(),
+          modelCallId: ids.nextModelCallId(),
+          workspaceRoot: "/workspace",
+          sandboxProfile: "host-workspace-v1",
+          totalRunToolCalls: 0,
+        };
+        approvals.onRequest((binding) =>
+          approvals.resolveApproval(binding.approvalId, context.runId, "allow-once"),
+        );
+
+        const events: string[] = [];
+        runtime.onEvent((e) => events.push(e.type));
+
+        const [outcome] = await runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_g5"),
+              modelCallId: context.modelCallId,
+              ordinal: 1,
+              toolName: "test.write_side_effect",
+              rawArguments: { path: "a.txt" },
+            },
+          ],
+          context,
+          parentController.signal,
+        );
+
+        expect(executions).toBe(1);
+        expect(effectCount).toBe(1);
+        expect(childAbortedInImpl).toBe(true);
+        expect(outcome).toMatchObject({
+          terminalState: "outcome-uncertain",
+          error: {
+            code: "TOOL_OUTCOME_UNCERTAIN",
+            causeCode: "TOOL_CANCELLED",
+          },
+        });
+        expect(events.filter((t) => t === "tool.failed")).toHaveLength(1);
+        expect(events.filter((t) => t === "tool.cancelled")).toHaveLength(0);
+        expect(events.filter((t) => t === "tool.completed")).toHaveLength(0);
+      });
+    });
+
+    describe("G6 post-effect timeout", () => {
+      it("classifies post-side-effect timeout as outcome-uncertain using fake timers", async () => {
+        vi.useFakeTimers();
+        try {
+          let executions = 0;
+          let effectCount = 0;
+          let childAbortedInImpl = false;
+
+          const registry = new ToolRegistry();
+          registry.register({
+            name: "test.timeout_side_effect",
+            descriptorVersion: "1.0.0",
+            owningModule: "test",
+            description: "timeout side effect tool",
+            argumentSchema: Type.Object({ path: Type.String() }),
+            resultSchema: Type.Object({ ok: Type.Boolean() }),
+            effectClassification: "side-effecting",
+            sensitivityClassification: "none",
+            executionTarget: "workspace",
+            sandboxRequirement: "host-workspace-v1",
+            timeoutMs: 1000,
+            cancellationSupport: true,
+            concurrencyTrait: "sequential",
+            idempotencyTrait: false,
+            approvalSummaryRenderer: () => "timeout write",
+            redactionRules: [],
+            inputLimits: {},
+            outputLimits: {},
+            progressFingerprintVersion: "1.0.0",
+            execute: async (_args, context) => {
+              executions++;
+              context.markIoStarted();
+              context.markSideEffectPossible();
+              effectCount++;
+              vi.advanceTimersByTime(2000);
+              childAbortedInImpl = Boolean(context.signal?.aborted);
+              throw new Error("timed out side effect");
+            },
+          });
+          registry.freeze();
+
+          const ids = createSequentialIdFactory();
+          const approvals = new ApprovalCoordinator(ids);
+          const policy = {
+            evaluateInvocation: async (_t: any, args: any) => ({
+              decision: "require-approval",
+              reason: "approval required",
+              policyProfile: "test",
+              policyVersion: "1.0.0",
+              targetPath: args.path,
+              policyConstraints: {},
+              redactionMetadata: {},
+            }),
+          } as any;
+          const runtime = new ToolRuntime(registry, policy, approvals, {
+            toolTimeoutMs: 1000,
+          });
+          const context: ToolBatchContext = {
+            agentId: createAgentId("primary"),
+            sessionKey: createSessionKey("agent:primary:g6"),
+            sessionId: ids.nextSessionId(),
+            runId: ids.nextRunId(),
+            attemptId: ids.nextAttemptId(),
+            modelCallId: ids.nextModelCallId(),
+            workspaceRoot: "/workspace",
+            sandboxProfile: "host-workspace-v1",
+            totalRunToolCalls: 0,
+          };
+          approvals.onRequest((binding) =>
+            approvals.resolveApproval(binding.approvalId, context.runId, "allow-once"),
+          );
+
+          const events: string[] = [];
+          runtime.onEvent((e) => events.push(e.type));
+
+          const [outcome] = await runtime.executeBatch(
+            [
+              {
+                toolCallId: createToolCallId("tcall_g6"),
+                modelCallId: context.modelCallId,
+                ordinal: 1,
+                toolName: "test.timeout_side_effect",
+                rawArguments: { path: "a.txt" },
+              },
+            ],
+            context,
+          );
+
+          expect(executions).toBe(1);
+          expect(effectCount).toBe(1);
+          expect(childAbortedInImpl).toBe(true);
+          expect(outcome).toMatchObject({
+            terminalState: "outcome-uncertain",
+            error: {
+              code: "TOOL_OUTCOME_UNCERTAIN",
+              causeCode: "TOOL_EXECUTION_TIMEOUT",
+            },
+          });
+          expect(events.filter((t) => t === "tool.failed")).toHaveLength(1);
+          expect(events.filter((t) => t === "tool.completed")).toHaveLength(0);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+
+    describe("G7 race matrix", () => {
+      it("ensures exactly one terminal outcome and event across cancellation, timeout, and late markers", async () => {
+        const ids = createSequentialIdFactory();
+        let lateContext: ToolExecutionContext | undefined;
+        const registry = new ToolRegistry();
+        registry.register({
+          name: "test.late_markers",
+          descriptorVersion: "1.0.0",
+          owningModule: "test",
+          description: "test late markers",
+          argumentSchema: Type.Object({ path: Type.String() }),
+          resultSchema: Type.Object({ ok: Type.Boolean() }),
+          effectClassification: "read-only",
+          sensitivityClassification: "none",
+          executionTarget: "workspace",
+          sandboxRequirement: "host-workspace-v1",
+          timeoutMs: 5000,
+          cancellationSupport: true,
+          concurrencyTrait: "parallel-safe",
+          idempotencyTrait: true,
+          approvalSummaryRenderer: () => "read",
+          redactionRules: [],
+          inputLimits: {},
+          outputLimits: {},
+          progressFingerprintVersion: "1.0.0",
+          execute: async (_args, context) => {
+            context.markIoStarted();
+            lateContext = context;
+            return { ok: true };
+          },
+        });
+        registry.freeze();
+
+        const policy = {
+          evaluateInvocation: async (_t: any, args: any) => ({
+            decision: "allow",
+            reason: "allowed",
+            policyProfile: "test",
+            policyVersion: "1.0.0",
+            targetPath: args.path,
+            policyConstraints: {},
+            redactionMetadata: {},
+          }),
+        } as any;
+        const runtime = new ToolRuntime(registry, policy, new ApprovalCoordinator(ids));
+        const batchContext: ToolBatchContext = {
+          agentId: createAgentId("primary"),
+          sessionKey: createSessionKey("agent:primary:g7"),
+          sessionId: ids.nextSessionId(),
+          runId: ids.nextRunId(),
+          attemptId: ids.nextAttemptId(),
+          modelCallId: ids.nextModelCallId(),
+          workspaceRoot: "/workspace",
+          sandboxProfile: "host-workspace-v1",
+          totalRunToolCalls: 0,
+        };
+
+        const events: string[] = [];
+        runtime.onEvent((e) => events.push(e.type));
+
+        const [outcome] = await runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_g7_late"),
+              modelCallId: batchContext.modelCallId,
+              ordinal: 1,
+              toolName: "test.late_markers",
+              rawArguments: { path: "a.txt" },
+            },
+          ],
+          batchContext,
+        );
+
+        expect(outcome?.ok).toBe(true);
+        const eventCountBeforeLate = events.length;
+        const terminalEventsBeforeLate = events.filter((t) =>
+          ["tool.completed", "tool.failed", "tool.cancelled"].includes(t),
+        );
+        expect(terminalEventsBeforeLate).toHaveLength(1);
+
+        lateContext?.markIoStarted();
+        lateContext?.markSideEffectPossible();
+
+        expect(events.length).toBe(eventCountBeforeLate);
+        const terminalEventsAfterLate = events.filter((t) =>
+          ["tool.completed", "tool.failed", "tool.cancelled"].includes(t),
+        );
+        expect(terminalEventsAfterLate).toHaveLength(1);
+      });
+    });
+
+    describe("G8 no automatic replay batch proof", () => {
+      it("halts sequential execution after uncertain side-effect failure without invoking remaining batch tools", async () => {
+        const ids = createSequentialIdFactory();
+        let firstExecutions = 0;
+        let secondExecutions = 0;
+        let firstEffects = 0;
+
+        const registry = new ToolRegistry();
+        registry.register({
+          name: "test.write_uncertain_1",
+          descriptorVersion: "1.0.0",
+          owningModule: "test",
+          description: "write uncertain 1",
+          argumentSchema: Type.Object({ path: Type.String() }),
+          resultSchema: Type.Object({ ok: Type.Boolean() }),
+          effectClassification: "side-effecting",
+          sensitivityClassification: "none",
+          executionTarget: "workspace",
+          sandboxRequirement: "host-workspace-v1",
+          timeoutMs: 5000,
+          cancellationSupport: true,
+          concurrencyTrait: "sequential",
+          idempotencyTrait: false,
+          approvalSummaryRenderer: () => "write 1",
+          redactionRules: [],
+          inputLimits: {},
+          outputLimits: {},
+          progressFingerprintVersion: "1.0.0",
+          execute: async (_args, context) => {
+            firstExecutions++;
+            context.markIoStarted();
+            context.markSideEffectPossible();
+            firstEffects++;
+            throw new Error("uncertain write failure");
+          },
+        });
+        registry.register({
+          name: "test.write_uncertain_2",
+          descriptorVersion: "1.0.0",
+          owningModule: "test",
+          description: "write uncertain 2",
+          argumentSchema: Type.Object({ path: Type.String() }),
+          resultSchema: Type.Object({ ok: Type.Boolean() }),
+          effectClassification: "side-effecting",
+          sensitivityClassification: "none",
+          executionTarget: "workspace",
+          sandboxRequirement: "host-workspace-v1",
+          timeoutMs: 5000,
+          cancellationSupport: true,
+          concurrencyTrait: "sequential",
+          idempotencyTrait: false,
+          approvalSummaryRenderer: () => "write 2",
+          redactionRules: [],
+          inputLimits: {},
+          outputLimits: {},
+          progressFingerprintVersion: "1.0.0",
+          execute: async (_args, context) => {
+            secondExecutions++;
+            context.markIoStarted();
+            return { ok: true };
+          },
+        });
+        registry.freeze();
+
+        const approvals = new ApprovalCoordinator(ids);
+        const policy = {
+          evaluateInvocation: async (_t: any, args: any) => ({
+            decision: "require-approval",
+            reason: "approval required",
+            policyProfile: "test",
+            policyVersion: "1.0.0",
+            targetPath: args.path,
+            policyConstraints: {},
+            redactionMetadata: {},
+          }),
+        } as any;
+        const runtime = new ToolRuntime(registry, policy, approvals);
+        const batchContext: ToolBatchContext = {
+          agentId: createAgentId("primary"),
+          sessionKey: createSessionKey("agent:primary:g8_batch"),
+          sessionId: ids.nextSessionId(),
+          runId: ids.nextRunId(),
+          attemptId: ids.nextAttemptId(),
+          modelCallId: ids.nextModelCallId(),
+          workspaceRoot: "/workspace",
+          sandboxProfile: "host-workspace-v1",
+          totalRunToolCalls: 0,
+        };
+        approvals.onRequest((binding) =>
+          approvals.resolveApproval(binding.approvalId, batchContext.runId, "allow-once"),
+        );
+
+        const outcomes = await runtime.executeBatch(
+          [
+            {
+              toolCallId: createToolCallId("tcall_g8_1"),
+              modelCallId: batchContext.modelCallId,
+              ordinal: 1,
+              toolName: "test.write_uncertain_1",
+              rawArguments: { path: "1.txt" },
+            },
+            {
+              toolCallId: createToolCallId("tcall_g8_2"),
+              modelCallId: batchContext.modelCallId,
+              ordinal: 2,
+              toolName: "test.write_uncertain_2",
+              rawArguments: { path: "2.txt" },
+            },
+          ],
+          batchContext,
+        );
+
+        expect(firstExecutions).toBe(1);
+        expect(firstEffects).toBe(1);
+        expect(secondExecutions).toBe(0);
+        expect(outcomes[0]!.terminalState).toBe("outcome-uncertain");
+        expect(outcomes[1]!.terminalState).toBe("not-started");
+      });
+    });
   });
 });

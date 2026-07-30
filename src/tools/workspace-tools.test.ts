@@ -270,4 +270,97 @@ describe("workspace tools containment", () => {
     ]);
     expect(markerCalls).toEqual(["io", "io", "io", "effect", "io", "effect"]);
   });
+
+  describe("G2 authoritative start and marker ordering", () => {
+    it("verifies no tool.started before markIoStarted, single tool.started emission, and exact workspace-tool marker order", async () => {
+      const sequence: string[] = [];
+      const filesystem: WorkspaceFilesystem = {
+        preflight: async () => undefined,
+        list: async () => {
+          sequence.push("filesystem.list");
+          return [];
+        },
+        readTextChunk: async () => {
+          sequence.push("filesystem.readTextChunk");
+          return { text: "data", bytesRead: 4, fileSizeBytes: 4 };
+        },
+        inspectTextForWrite: async () => {
+          sequence.push("filesystem.inspectTextForWrite");
+          return { priorState: "existed", previousHash: "abc" };
+        },
+        createText: async () => {
+          sequence.push("filesystem.createText");
+        },
+        writeText: async () => {
+          sequence.push("filesystem.writeText");
+        },
+      };
+
+      const listTool = createWorkspaceListTool(filesystem);
+      const readTool = createWorkspaceReadTextTool(filesystem);
+      const writeTool = createWorkspaceWriteTextTool(filesystem);
+
+      let startedCount = 0;
+      const makeContext = (targetPath: string): ToolExecutionContext => ({
+        agentId: "agent_primary" as any,
+        workspaceRoot: "/workspace",
+        targetPath,
+        toolCallId: "tool_call" as any,
+        inputLimits: {},
+        outputLimits: {},
+        policyConstraints: {},
+        sandboxProfile: "host-workspace-v1",
+        markIoStarted: () => {
+          startedCount++;
+          sequence.push("markIoStarted");
+        },
+        markSideEffectPossible: () => {
+          sequence.push("markSideEffectPossible");
+        },
+      });
+
+      // 1. workspace.list
+      sequence.length = 0;
+      startedCount = 0;
+      await listTool.execute({ path: "dir" }, makeContext("dir"));
+      expect(startedCount).toBe(1);
+      expect(sequence).toEqual(["markIoStarted", "filesystem.list"]);
+
+      // 2. workspace.read_text
+      sequence.length = 0;
+      startedCount = 0;
+      await readTool.execute({ path: "file.txt" }, makeContext("file.txt"));
+      expect(startedCount).toBe(1);
+      expect(sequence).toEqual(["markIoStarted", "filesystem.readTextChunk"]);
+
+      // 3. workspace.write_text mode=write
+      sequence.length = 0;
+      startedCount = 0;
+      await writeTool.execute(
+        { path: "file.txt", content: "x", mode: "write" },
+        makeContext("file.txt"),
+      );
+      expect(startedCount).toBe(1);
+      expect(sequence).toEqual([
+        "markIoStarted",
+        "filesystem.inspectTextForWrite",
+        "markSideEffectPossible",
+        "filesystem.writeText",
+      ]);
+
+      // 4. workspace.write_text mode=create
+      sequence.length = 0;
+      startedCount = 0;
+      await writeTool.execute(
+        { path: "file.txt", content: "x", mode: "create" },
+        makeContext("file.txt"),
+      );
+      expect(startedCount).toBe(1);
+      expect(sequence).toEqual([
+        "markIoStarted",
+        "markSideEffectPossible",
+        "filesystem.createText",
+      ]);
+    });
+  });
 });

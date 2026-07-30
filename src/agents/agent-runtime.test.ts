@@ -26,7 +26,10 @@ import { createWorkspaceWriteTextTool } from "../tools/workspace-tools.js";
 import { ToolRuntime } from "../tools/tool-runtime.js";
 import { ApprovalCoordinator } from "../policy/approval-coordinator.js";
 import { WorkspacePolicy } from "../policy/workspace-policy.js";
+import { AppError } from "../core/errors.js";
 import { FsSafeWorkspaceFilesystem } from "../platform/workspace-filesystem.js";
+import type { WorkspaceFilesystem } from "../tools/workspace-filesystem.js";
+import { Type } from "typebox";
 import {
   createRuntimeAuthority,
   createSequentialIdFactory,
@@ -2732,4 +2735,117 @@ describe("AgentRuntime", () => {
       );
     },
   );
+
+  describe("G8 no automatic replay integration", () => {
+    it("halts run loop on uncertain tool failure without model retry or tool replay", async () => {
+      const sessions = new SessionResolver(new SqliteSessionStore(database));
+      const transcripts = new InMemoryTranscriptStore();
+      const events = new RuntimeEventBus();
+      const ids = createSequentialIdFactory();
+
+      let modelProviderCalls = 0;
+      let toolExecutions = 0;
+      let toolEffects = 0;
+
+      const customFilesystem: WorkspaceFilesystem = {
+        preflight: async () => undefined,
+        list: async () => [],
+        readTextChunk: async () => ({ text: "", bytesRead: 0, fileSizeBytes: 0 }),
+        inspectTextForWrite: async () => ({ priorState: "none" }),
+        createText: async () => {
+          console.log("DEBUG_CREATE_TEXT_CALLED");
+          toolExecutions++;
+          toolEffects++;
+          throw new AppError("TOOL_IMPLEMENTATION_FAILED", "side effect failure");
+        },
+        writeText: async () => {
+          toolExecutions++;
+          toolEffects++;
+          throw new AppError("TOOL_IMPLEMENTATION_FAILED", "side effect failure");
+        },
+      };
+
+      const registry = new ToolRegistry();
+      registry.register(createWorkspaceWriteTextTool(customFilesystem));
+      registry.freeze();
+
+      const approvals = new ApprovalCoordinator(ids);
+      approvals.onRequest((binding) =>
+        approvals.resolveApproval(binding.approvalId, binding.runId, "allow-once"),
+      );
+
+      const policy = new WorkspacePolicy(customFilesystem);
+      const toolRuntime = new ToolRuntime(registry, policy, approvals);
+
+      const provider = new FakeModelProvider({
+        text: "requesting write",
+        toolCalls: [
+          {
+            id: "call_g8_integ",
+            name: "workspace.write_text",
+            arguments: { path: "a.txt", content: "x", mode: "create" },
+          },
+        ],
+        usage: {
+          providerTotalTokens: 10n,
+          inputTokens: 5n,
+          outputTokens: 5n,
+          measurement: "provider-exact",
+        },
+        billingCertainty: "actual-known",
+      });
+
+      const origExecute = provider.execute.bind(provider);
+      provider.execute = async (params, signal) => {
+        modelProviderCalls++;
+        return origExecute(params, signal);
+      };
+
+      const runs = new SqliteRunStore(database);
+      const attempts = new SqliteAttemptStore(database);
+      const runtime = new AgentRuntime({
+        ...createRuntimeAuthority(),
+        sessions,
+        transcripts,
+        runs,
+        attempts,
+        journal: new SqliteRunJournalStore(database),
+        events,
+        lanes: new SessionRunLaneCoordinator(1),
+        provider,
+        usageBudgetGate: new UsageBudgetGate(database, [], []),
+        toolRuntime,
+        toolRegistry: registry,
+        workspacePolicy: policy,
+        workspaceRoot: process.cwd(),
+      });
+
+      const run = await runtime.admit({
+        session: { kind: "main", agentId: "primary" },
+        input: "Run write text",
+      });
+
+      const terminalEvent = await terminalFor(events, run.runId);
+      expect(terminalEvent.eventName).toBe("run.failed");
+
+      const runRecord = await runs.get(run.runId);
+      expect(runRecord?.status).toBe("failed");
+      expect(runRecord?.terminalCode).toBe("TOOL_OUTCOME_UNCERTAIN");
+
+      expect(modelProviderCalls).toBe(1);
+      expect(toolExecutions).toBe(1);
+      expect(toolEffects).toBe(1);
+
+      const terminalEvents = events
+        .snapshot()
+        .filter(
+          (e) =>
+            e.runId === run.runId &&
+            (e.eventName === "run.completed" ||
+              e.eventName === "run.failed" ||
+              e.eventName === "run.cancelled"),
+        );
+      expect(terminalEvents).toHaveLength(1);
+    });
+  });
 });
