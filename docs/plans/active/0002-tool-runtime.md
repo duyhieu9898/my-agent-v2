@@ -922,7 +922,7 @@ relevant Architecture lifecycle/security invariants.
 | M3-R3-1 | M3-F02; active plan §4.6; ADR 0008; Architecture lifecycle/security invariants           | Paths or symlinks could escape the explicit workspace.                                       | Enforce workspace containment and symlink safety.                     | Temporary filesystem containment, traversal, and symlink-escape tests with no escaped access.                                 | blocking       | PASS              |
 | M3-R3-2 | M3-F02; active plan §4.6; ADR 0008; ADR 0016; Architecture lifecycle/security invariants | Create/write publication could race path changes or expose partial writes.                   | Use fs-safe-backed atomic create/write; retain strict R3A path rules. | Temporary filesystem create/write evidence: no clobber, no partial destination, no implicit parent, and no redirected access. | blocking       | PASS              |
 | M3-R3-3 | M3-F04; active plan §§4.6, 4.11; ADR 0006; ADR 0008                                      | Timeout or cancellation could race only the returned promise while underlying I/O continues. | Propagate abort to underlying I/O and produce one terminal outcome.   | Abort-aware fake I/O proves underlying operation observes cancellation and cannot later complete successfully.                | blocking       | PASS              |
-| M3-R3-4 | M3-F04; active plan §4.11; ADR 0006; ADR 0008                                            | Post-start side effects could be reported as safely rolled back.                             | Classify post-start ambiguous effects as uncertain.                   | Fault-injected side-effect fake proves uncertain terminal evidence and no replay.                                             | blocking       | PLANNED — NOT RUN |
+| M3-R3-4 | M3-F04; active plan §4.11; ADR 0006; ADR 0008                                            | The runtime cannot yet distinguish pre-mutation implementation failure from an outcome after an external effect became possible. | Apply the frozen invocation-certainty, terminal-classification, and no-replay contract below. | M3-R3-4-G1 through M3-R3-4-G9 below. | blocking | PLANNED — NOT RUN |
 | M3-R3-5 | M3-F06; active plan §§4.6, 4.11; ADR 0006; Architecture lifecycle/security invariants    | SQLite could close while runtime/tool work remains active.                                   | Cancel and drain active work before storage close.                    | Ordered shutdown fake records cancellation, drain, cleanup, then storage close; asserts close is last.                        | blocking       | PLANNED — NOT RUN |
 | M3-R3-6 | M3-F02, M3-F04, M3-F06; active plan §4.11; ADR 0006; ADR 0008                            | Success, failure, timeout, or cancellation could leak temporary resources or handles.        | Clean up in every terminal path.                                      | Terminal-path matrix asserts cleanup for success, failure, cancellation, timeout, and uncertain outcomes.                     | blocking       | PLANNED — NOT RUN |
 
@@ -1005,6 +1005,353 @@ side-effecting post-start cancellation remains outcome-uncertain.
 ```
 
 M3-R3C-F01: CLOSED — PASS
+
+### M3-R3-4 — Post-start side-effect certainty and uncertain outcomes
+
+**Status:** PLANNED — NOT RUN
+**Mapped finding:** M3-F04 only.
+
+#### Outcome and current finding
+
+M3-R3-4 closes only the residual M3-F04 meaning: post-start side-effect
+certainty and uncertain outcomes remain incomplete.
+
+M3-R3-3 closed abort propagation, one-terminal resolution, and late-success
+suppression, but did not establish an authoritative side-effect certainty
+boundary.
+
+The current runtime emits `tool.started` before `registry.execute()` invokes
+the implementation. The current side-effecting classifier treats every error
+after that runtime dispatch point as outcome-uncertain. Therefore `tool.started`
+is not authoritative proof that implementation I/O began, and the runtime
+cannot distinguish a pre-mutation implementation failure from a failure after
+an external effect became possible.
+
+An outcome may have `terminalState` `outcome-uncertain` while retaining a
+primary cause code such as `TOOL_CANCELLED` or `TOOL_EXECUTION_TIMEOUT`.
+M3-R3-4 requires `TOOL_OUTCOME_UNCERTAIN` to be the primary externally
+consumed classification, with the original cause retained only as safe
+`causeCode` metadata.
+
+#### Locked invocation phase model
+
+```text
+prepared
+→ implementation-io-started
+→ side-effect-possible
+→ terminal
+```
+
+`markIoStarted()`:
+
+- implementation-owned invocation marker;
+- called immediately before the first implementation I/O;
+- emits `tool.started` exactly once;
+- does not by itself prove a side effect may have occurred.
+
+`markSideEffectPossible()`:
+
+- implementation-owned invocation marker for a side-effecting tool;
+- called immediately before the first operation that may mutate external state;
+- is the authoritative uncertainty boundary;
+- may be conservative when cancellation races with the actual syscall;
+- must not emit a new public event in this checkpoint.
+
+For the production workspace write tool, the locked conceptual order is:
+
+```text
+markIoStarted()
+→ inspect existing state when required
+→ markSideEffectPossible()
+→ createText() | writeText()
+```
+
+A failure during inspection before `markSideEffectPossible()` is not uncertain
+merely because the descriptor is side-effecting. No new public
+side-effect-started event is required for M3-R3-4.
+
+#### Locked classification precedence
+
+1. Admission, validation, policy, approval, execution-context or other pre-I/O
+   failures: `terminalState = failed-before-known-side-effect`, event =
+   `tool.failed`, code = original normalized safe code.
+2. Explicit cancellation before side-effect-possible: `terminalState =
+   cancelled-with-no-known-side-effect`, event = `tool.cancelled`, code =
+   `TOOL_CANCELLED`.
+3. Timeout or implementation failure before side-effect-possible:
+   `terminalState = failed-before-known-side-effect`, event = `tool.failed`,
+   code = `TOOL_EXECUTION_TIMEOUT`, `TOOL_IMPLEMENTATION_FAILED`, or another
+   applicable safe normalized code.
+4. Validated successful result: `terminalState = completed`, event =
+   `tool.completed`.
+5. Any non-success after side-effect-possible: `terminalState =
+   outcome-uncertain`, event = `tool.failed`, code = `TOOL_OUTCOME_UNCERTAIN`,
+   `causeCode` = original normalized cause when safely representable.
+6. First terminal resolution wins. Late completion, error, cancellation,
+   timeout, marker invocation, or event emission cannot create a second terminal
+   outcome.
+
+Uncertain messages and metadata must not claim `rolled back`, `not applied`,
+`no side effect occurred`, or `safe to replay`.
+
+#### Approval, cancellation, and timeout interactions
+
+- Required approval and policy recheck complete before implementation I/O.
+- Approval deny and expiry prevent `tool.started`.
+- Cancellation while awaiting approval is `cancelled-with-no-known-side-effect`.
+- Approval timeout is not execution uncertainty.
+- Parent cancellation is bridged to the child invocation signal before
+  implementation can begin.
+- Cancellation and timeout after side-effect-possible remain uncertain even when
+  the child implementation observes `AbortSignal`.
+- Timeout remains distinct from explicit user cancellation through `causeCode`.
+
+M3-R3-3 requirements remain preserved: underlying cooperative I/O observes the
+child `AbortSignal`; one terminal resolution; and late-success suppression.
+
+#### No-replay rule
+
+- The runtime permits no automatic replay after an uncertain outcome.
+- Tool Runtime performs no implementation retry.
+- An uncertain side-effecting outcome stops the remaining sequential batch calls
+  before start.
+- CheckpointStage returns fail for outcome-uncertain.
+- Agent Runtime performs no next model cycle for that tool outcome.
+- Agent Runtime performs no retry-attempt that replays the invocation.
+- The run terminal code is `TOOL_OUTCOME_UNCERTAIN`.
+- The uncertain invocation implementation execute count is exactly one.
+
+Non-goals: manual submission of a new run; cross-run idempotency keys; durable
+deduplication; transactions; compensation; and rollback.
+
+#### Cleanup boundary
+
+M3-R3-4 requires only cleanup necessary to preserve certainty and terminal
+resolution:
+
+- clear invocation timeout;
+- remove parent abort listener;
+- seal invocation phase state; and
+- suppress late resolution and late marker/event publication.
+
+The complete success/failure/cancel/timeout/uncertain cleanup matrix remains
+M3-R3-6.
+
+#### Frozen acceptance and evidence matrix
+
+All gates below are blocking and **PLANNED — NOT RUN**.
+
+##### M3-R3-4-G1 — Pre-start certainty
+
+**Status:** PLANNED — NOT RUN
+
+**Authority:** ADR 0008 timeout/cancellation taxonomy; active plan §§4.5 and 4.11.
+
+**Required behavior:** Validation, policy, approval, execution-context and
+already-aborted failures do not emit `tool.started` or mark a possible side
+effect. Explicit pre-start cancellation is `cancelled-with-no-known-side-effect`.
+
+**Required proof:** Deterministic matrix covering invalid arguments, policy
+denial, approval denial, approval expiry, approval cancellation, and
+already-aborted parent signal. Assert zero implementation I/O, zero side-effect
+markers, zero `tool.completed`, one normalized terminal outcome, and the
+correct terminal event family.
+
+**Production wiring proof:** Real `ToolRuntime` and `ApprovalCoordinator` path.
+**Non-goals:** Persistent approvals and shutdown behavior.
+
+##### M3-R3-4-G2 — Authoritative implementation start
+
+**Status:** PLANNED — NOT RUN
+
+**Authority:** ADR 0008 execution lifecycle; active plan §4.11.
+
+**Required behavior:** `tool.started` is emitted exactly once from the
+implementation-I/O marker, not from the runtime before invoking the
+implementation.
+
+**Required proof:** Ordered recorder proves no `tool.started` before
+`markIoStarted()`, exactly one `tool.started` at the first marker, and duplicate
+marker calls do not duplicate the event.
+
+**Production wiring proof:** All three registered workspace tool implementations
+use the start marker before their first filesystem I/O.
+**Non-goals:** New durable event infrastructure.
+
+##### M3-R3-4-G3 — Post-start pre-effect failure
+
+**Status:** PLANNED — NOT RUN
+
+**Authority:** ADR 0008 certainty taxonomy; M3-F04.
+
+**Required behavior:** A side-effecting implementation may begin read-only
+inspection and fail before the mutation boundary without being classified
+uncertain.
+
+**Required proof:** Fault-injected `workspace.write_text` test: `markIoStarted`
+occurs; `inspectTextForWrite` fails; `markSideEffectPossible` does not occur;
+`createText`/`writeText` call count = 0; `terminalState =
+failed-before-known-side-effect`; primary code = applicable implementation
+failure; event = `tool.failed`.
+
+**Production wiring proof:** Production workspace-write tool factory with a fake
+`WorkspaceFilesystem`.
+**Non-goals:** Rollback and compensation.
+
+##### M3-R3-4-G4 — Post-effect implementation failure
+
+**Status:** PLANNED — NOT RUN
+
+**Authority:** ADR 0008 uncertain outcomes; M3-F04; active plan §4.11.
+
+**Required behavior:** Any failure after `markSideEffectPossible()` is
+`outcome-uncertain` with primary code `TOOL_OUTCOME_UNCERTAIN`.
+
+**Required proof:** Fault-injected production workspace-write test records one
+possible or actual effect and then throws. Assert implementation execute count =
+1; effect count = 1; `terminalState = outcome-uncertain`; `error.code =
+TOOL_OUTCOME_UNCERTAIN`; `error.causeCode = TOOL_IMPLEMENTATION_FAILED` or the
+injected normalized cause; event = `tool.failed`; and zero `tool.completed`.
+
+**Production wiring proof:** Production workspace-write factory and Tool Runtime
+classification path.
+**Non-goals:** Durable audit completeness.
+
+##### M3-R3-4-G5 — Post-effect cancellation
+
+**Status:** PLANNED — NOT RUN
+
+**Authority:** ADR 0006 cancellation; ADR 0008 uncertain outcomes; accepted
+M3-R3-3.
+
+**Required behavior:** Cancellation after the side-effect-possible boundary
+remains uncertain, even when cooperative I/O observes the child abort signal.
+
+**Required proof:** Event-driven barrier test: approval resolves;
+`markIoStarted` occurs; `markSideEffectPossible` occurs; effect is recorded;
+parent cancellation occurs; child signal becomes aborted; outcome is
+outcome-uncertain; primary code is `TOOL_OUTCOME_UNCERTAIN`; `causeCode` is
+`TOOL_CANCELLED`; one `tool.failed`; zero `tool.cancelled`; zero
+`tool.completed`; and late success cannot change the outcome.
+
+**Production wiring proof:** Real approval-gated side-effecting Tool Runtime path.
+**Non-goals:** Application shutdown drain.
+
+##### M3-R3-4-G6 — Post-effect timeout
+
+**Status:** PLANNED — NOT RUN
+
+**Authority:** ADR 0008 timeout and uncertainty; active plan §4.11.
+
+**Required behavior:** Timeout after the side-effect-possible boundary remains
+uncertain.
+
+**Required proof:** Fake-clock test asserts effect count = 1; child signal
+becomes aborted; `terminalState = outcome-uncertain`; `error.code =
+TOOL_OUTCOME_UNCERTAIN`; `error.causeCode = TOOL_EXECUTION_TIMEOUT`; one
+`tool.failed`; zero `tool.completed`; and late success suppressed.
+
+**Production wiring proof:** Real Tool Runtime timeout path.
+**Non-goals:** Run-timeout redesign.
+
+##### M3-R3-4-G7 — Exactly one terminal outcome
+
+**Status:** PLANNED — NOT RUN
+
+**Authority:** ADR 0006 exactly-once terminalization; ADR 0008 one terminal
+result; accepted M3-R3-3.
+
+**Required behavior:** Completion, error, cancellation and timeout races produce
+one outcome and one terminal event.
+
+**Required proof:** Parameterized race matrix including result versus
+cancellation, result versus timeout, implementation error versus cancellation,
+implementation error versus timeout, and late phase marker after terminal.
+Assert no terminal event count exceeds one.
+
+**Production wiring proof:** Tool Runtime terminal-resolution guard and actual
+event emitter.
+**Non-goals:** Full R3-6 resource-cleanup matrix.
+
+##### M3-R3-4-G8 — No automatic replay
+
+**Status:** PLANNED — NOT RUN
+
+**Authority:** ADR 0006 Checkpoint authority; ADR 0008 replay prohibition;
+active plan §4.9.
+
+**Required behavior:** An uncertain invocation is never automatically retried or
+replayed.
+
+**Required proof:** Two levels. Tool Runtime batch: uncertain implementation
+execute count = 1; later sequential calls remain not-started. Agent Runtime
+integration: uncertain outcome causes Checkpoint fail; no next model request; no
+second tool invocation; no retry-attempt; terminal failure code =
+`TOOL_OUTCOME_UNCERTAIN`.
+
+**Production wiring proof:** Production `CheckpointStage` and `AgentRuntime`
+tool-cycle path.
+**Non-goals:** Cross-run deduplication and manual retry prevention.
+
+##### M3-R3-4-G9 — Production composition
+
+**Status:** PLANNED — NOT RUN
+
+**Authority:** Architecture §§13–14; ADR 0008; Implementation Plan Milestone 3.
+
+**Required behavior:** Bootstrap continues to expose workspace tools only through
+the composed Tool Runtime, with updated lifecycle markers present on the
+production write path.
+
+**Required proof:** Composition assertion and focused production-regression tests.
+
+**Production wiring proof:**
+
+```text
+createApp
+→ FsSafeWorkspaceFilesystem
+→ workspace tools
+→ ToolRegistry
+→ WorkspacePolicy
+→ ApprovalCoordinator
+→ ToolRuntime
+→ AgentRuntime
+```
+
+**Non-goals:** M3-R4 journal and Gemini continuation.
+
+#### Scope
+
+**Expected implementation scope after this planning task:**
+
+```text
+src/tools/contracts.ts
+src/tools/tool-runtime.ts
+src/tools/workspace-tools.ts
+src/tools/tool-runtime.test.ts
+src/tools/workspace-tools.test.ts
+src/agents/lifecycle.ts
+src/agents/agent-runtime.test.ts
+```
+
+**Conditional implementation scope:**
+
+```text
+src/tools/workspace-filesystem.ts
+src/platform/workspace-filesystem.ts
+src/agents/agent-runtime.ts
+src/bootstrap/create-app.test.ts
+src/core/errors.ts
+```
+
+These are conditional and require source-backed necessity.
+
+**Out of scope:** M3-R3-5 shutdown cancel/drain; M3-R3-6 complete terminal
+cleanup matrix; M3-R4 lifecycle journal; M3-R4 Gemini continuation;
+controlled-verifier closure for M3-F07; Architecture or ADR changes;
+Implementation Plan changes; migrations; dependencies; status synchronization;
+cross-run idempotency or deduplication; transactions, rollback or compensation;
+browser, shell, memory or plugin work; and unrelated P2.
 
 M3-F02: CLOSED — PASS for M3-R3-1 workspace containment and strict symlink safety
 
