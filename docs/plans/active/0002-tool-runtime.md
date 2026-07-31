@@ -923,7 +923,7 @@ relevant Architecture lifecycle/security invariants.
 | M3-R3-2 | M3-F02; active plan §4.6; ADR 0008; ADR 0016; Architecture lifecycle/security invariants | Create/write publication could race path changes or expose partial writes.                                                       | Use fs-safe-backed atomic create/write; retain strict R3A path rules.                         | Temporary filesystem create/write evidence: no clobber, no partial destination, no implicit parent, and no redirected access. | blocking       | PASS              |
 | M3-R3-3 | M3-F04; active plan §§4.6, 4.11; ADR 0006; ADR 0008                                      | Timeout or cancellation could race only the returned promise while underlying I/O continues.                                     | Propagate abort to underlying I/O and produce one terminal outcome.                           | Abort-aware fake I/O proves underlying operation observes cancellation and cannot later complete successfully.                | blocking       | PASS              |
 | M3-R3-4 | M3-F04; active plan §4.11; ADR 0006; ADR 0008                                            | The runtime cannot yet distinguish pre-mutation implementation failure from an outcome after an external effect became possible. | Apply the frozen invocation-certainty, terminal-classification, and no-replay contract below. | M3-R3-4-G1 through M3-R3-4-G9 below.                                                                                          | blocking       | CLOSED — PASS     |
-| M3-R3-5 | M3-F06; active plan §§4.6, 4.11; ADR 0006; Architecture lifecycle/security invariants    | SQLite could close while runtime/tool work remains active.                                                                       | Cancel and drain active work before storage close.                                            | Ordered shutdown fake records cancellation, drain, cleanup, then storage close; asserts close is last.                        | blocking       | PLANNED — NOT RUN |
+| M3-R3-5 | M3-F06; active plan §§4.6, 4.11; ADR 0006; Architecture lifecycle/security invariants    | SQLite could close while runtime/tool work remains active.                                                                       | Cancel and drain active work before storage close.                                            | M3-R3-5-G1 through M3-R3-5-G7 below.                                                                                          | blocking       | PLANNED — NOT RUN |
 | M3-R3-6 | M3-F02, M3-F04, M3-F06; active plan §4.11; ADR 0006; ADR 0008                            | Success, failure, timeout, or cancellation could leak temporary resources or handles.                                            | Clean up in every terminal path.                                                              | Terminal-path matrix asserts cleanup for success, failure, cancellation, timeout, and uncertain outcomes.                     | blocking       | PLANNED — NOT RUN |
 
 M3-R3A closure for M3-R3-1:
@@ -1365,6 +1365,490 @@ M3-F02: CLOSED — PASS for M3-R3-1 workspace containment and strict symlink saf
 - M3-R3-2 fs-safe-backed atomic create/write publication and TOCTOU handling.
 
 **Next execution checkpoint:** M3-R3-5 — shutdown cancel/drain before storage close
+
+### M3-R3-5 — Shutdown cancel/drain before storage close
+
+**Status:** PLANNED — NOT RUN
+**Mapped finding:** M3-F06 only.
+**Matrix authority:** Architecture shutdown lifecycle ordering; ADR 0006 cancellation, finalization and lane-release decisions; ADR 0008 ToolRuntime cancellation and cleanup ownership; ADR 0009 storage shutdown ordering; active plan §§4.6 and 4.11.
+
+#### Outcome and historical finding
+
+M3-R3-5 locks the implementation and closure contract for shutdown cancellation and runtime drain before SQLite storage close.
+
+Preserved status:
+
+- M3-F06: DECISION VIOLATION
+- M3-R3-5: PLANNED — NOT RUN
+- M3-R3: IN PROGRESS
+- Overall M3: FAIL
+
+M3-R3-5 is implementation alignment with existing Architecture and ADRs. No Architecture or ADR change is required.
+
+#### 1. Exact decision violation
+
+Source-backed decision violation:
+
+```text
+Bootstrap closes the shared SQLite database without first preventing new
+AgentRuntime admission, cancelling every queued and active nonterminal run,
+and awaiting all runtime, provider, approval, ToolRuntime, finalization,
+lane, and capacity work that can still access storage.
+```
+
+Manifestations of this violation are tracked under single finding M3-F06 and not split into unrelated findings.
+
+#### 2. Boundary ownership
+
+Locked ownership contract:
+
+```text
+Bootstrap/application lifecycle:
+  owns the shutdown command and global component ordering.
+
+Gateway:
+  stops accepting transport work and closes client connections.
+  It does not own run cancellation or runtime drain.
+
+AgentRuntime:
+  stops run admission, cancels all accepted nonterminal work, and drains
+  accepted run tasks through checkpoint, finalization, cleanup, lane release,
+  capacity release, and cancellation-handle removal.
+
+ToolRuntime:
+  propagates cancellation to underlying tool implementations and proves that
+  physical invocations have drained before runtime drain completes.
+
+Storage:
+  closes only after all state-writing boundaries are quiescent.
+```
+
+No class named `ShutdownCoordinator` or other speculative abstraction is required.
+
+#### 3. Minimum shutdown contract
+
+Locked behavioral contract:
+
+```text
+1. Enter a stopping state and reject new runtime admission.
+2. Stop accepting new Gateway work and close client connections.
+3. Cancel every accepted nonterminal run, including:
+   - session-lane queued work;
+   - runtime-capacity waiters;
+   - active provider execution;
+   - approval waits;
+   - active ToolRuntime execution.
+4. Await runtime drain, including:
+   - all accepted run callbacks completed;
+   - provider operations settled;
+   - underlying tool implementation operations settled or proved stopped;
+   - checkpoint and FinalizeStage work completed;
+   - required transcript, continuation, usage, run, attempt and journal writes completed;
+   - session lanes released;
+   - runtime capacity permits and waiters released;
+   - approval waits resolved;
+   - cancellation handles removed;
+   - no future callback able to resume and access storage.
+5. Preserve existing run, tool and side-effect certainty classifications.
+6. Stop any remaining services that may write durable state.
+7. Close SQLite only after successful drain.
+8. Report successful shutdown only after storage close succeeds.
+```
+
+#### 4. Required state distinctions
+
+Required behavior for runtime states:
+
+##### Queued but not started
+
+Includes both:
+
+- waiting in a session lane;
+- waiting for runtime-wide capacity after lane acquisition.
+
+Required behavior:
+
+- must not start provider or tool execution;
+- must not create a new attempt after cancellation;
+- must receive exactly one terminal run outcome;
+- must release its queue reservation or capacity waiter;
+- must not resume when a later permit becomes available.
+
+##### Active provider execution
+
+Required behavior:
+
+- receives the owning run AbortSignal;
+- shutdown waits for the provider operation to settle;
+- usage reservation, dispatch and billing-certainty handling remain valid;
+- shutdown cancellation must not falsely classify ambiguous billing as proven non-billable.
+
+##### Active ToolRuntime execution
+
+Required behavior:
+
+- cancellation reaches the child implementation AbortSignal;
+- shutdown waits for physical implementation drain, not only the wrapper outcome;
+- late completion cannot create a second terminal outcome.
+
+##### Approval wait
+
+Required behavior:
+
+- pending approval is cancelled;
+- no tool implementation starts;
+- the owning run continues through checkpoint and finalization before storage close.
+
+##### Post-side-effect uncertain invocation
+
+Required behavior:
+
+```text
+terminalState = outcome-uncertain
+primary code = TOOL_OUTCOME_UNCERTAIN
+```
+
+Also required:
+
+- no replay;
+- no automatic retry;
+- no automatic compensation;
+- implementation execution count remains one;
+- shutdown still waits for the underlying invocation and cleanup to drain.
+
+##### Already terminal run
+
+Required behavior:
+
+- no second cancellation, checkpoint, finalization or terminal event;
+- if the execution callback or cleanup is still running, shutdown must still drain it;
+- durable terminal status alone is not runtime-idle evidence.
+
+#### 5. Required ordering
+
+Required production ordering:
+
+```text
+shutdown requested
+→ enable runtime admission fence
+→ stop accepting Gateway requests
+→ close Gateway client connections
+→ cancel queued and active nonterminal runs
+→ cancel approval waits
+→ propagate abort to provider and tool operations
+→ drain provider and underlying tool operations
+→ complete CheckpointStage and exactly-once FinalizeStage
+→ complete required durable writes
+→ release lanes, capacity permits/waiters, approvals and runtime handles
+→ prove AgentRuntime and ToolRuntime idle
+→ dispose remaining listeners/services
+→ close SQLite
+→ report successful shutdown
+```
+
+Disposing the ApprovalCoordinator by itself is not runtime drain.
+
+#### 6. Drain timeout and failure contract
+
+Locked failure behavior:
+
+- drain timeout or failure is an application-lifecycle/infrastructure shutdown failure;
+- it does not prove that active work stopped;
+- it must preserve the existing terminal classification of each affected run/tool;
+- shutdown failure evidence must identify the phase and bounded unfinished-work categories;
+- unfinished categories may include queued, capacity-waiting, provider, approval, tool, uncertain invocation and finalization work;
+- shutdown must reject rather than report success.
+
+Fail-closed behavior:
+
+```text
+do not close SQLite
+do not log successful shutdown
+return/rethrow a normalized shutdown failure
+allow the process entrypoint to set a non-zero exit status
+```
+
+A forced database close or forced process-exit policy is out of scope.
+
+The exact normalized shutdown error code may be finalized during implementation, but it must distinguish at least:
+
+```text
+drain timeout
+drain failure
+```
+
+#### 7. Acceptance matrix
+
+##### M3-R3-5-G1 — Admission quiesce
+
+**Status:** PLANNED — NOT RUN
+**Classification:** blocking
+
+**Authority:**
+
+- Architecture shutdown ordering
+- ADR 0006 AgentRuntime lifecycle ownership
+- ADR 0009 stop accepting new work before storage close
+- M3-F06
+
+**Required behavior:**
+After shutdown admission fencing begins, no new run can be accepted. A transport request already racing with Gateway shutdown must still be rejected by the runtime admission boundary before normal run creation.
+
+**Required proof:**
+Event-driven race test between agent.run admission and shutdown. Assert zero newly accepted runs after the fence.
+
+##### M3-R3-5-G2 — Queued and capacity-waiting cancellation
+
+**Status:** PLANNED — NOT RUN
+**Classification:** blocking
+
+**Authority:**
+
+- ADR 0006 queued cancellation and lane ownership
+- M3-F06
+
+**Required behavior:**
+Session-lane queued and runtime-capacity-waiting runs are cancelled without provider/tool execution and cannot later resume when permits are released.
+
+**Required proof:**
+Barrier-controlled parameterized tests for:
+
+- session-lane queued work;
+- runtime-capacity waiting work.
+
+Assert:
+
+- zero provider calls;
+- zero tool implementation calls;
+- no attempt/run start after cancellation;
+- exactly one terminal outcome;
+- waiter/reservation released;
+- no later reactivation.
+
+##### M3-R3-5-G3 — Active provider drain
+
+**Status:** PLANNED — NOT RUN
+**Classification:** blocking
+
+**Authority:**
+
+- ADR 0006 cancellation propagation and FinalizeStage
+- ADR 0009 active runs stop before storage close
+- M3-F06
+
+**Required behavior:**
+An active provider operation receives abort, settles, and completes owning-run finalization before storage close.
+
+**Required proof:**
+Barrier-controlled provider fake records:
+provider entered
+→ abort observed
+→ provider settled
+→ checkpoint/finalization completed
+→ storage closed
+
+Assert no provider or runtime storage access occurs after close.
+
+##### M3-R3-5-G4 — Approval and pre-effect tool drain
+
+**Status:** PLANNED — NOT RUN
+**Classification:** blocking
+
+**Authority:**
+
+- ADR 0006 run cancellation
+- ADR 0008 approval cancellation and execution lifecycle
+- M3-F06
+
+**Required behavior:**
+Approval waits are cancelled, no unapproved tool starts, pre-effect work cancels safely, and the owning run finalizes before storage close.
+
+**Required proof:**
+Approval barrier and pre-effect ToolRuntime integration tests.
+
+Assert:
+
+- pending approval cancelled;
+- zero side effects;
+- zero tool.started when implementation did not begin;
+- exactly one run/tool terminal outcome;
+- storage closes only after owning-run finalization.
+
+##### M3-R3-5-G5 — Active and uncertain tool physical drain
+
+**Status:** PLANNED — NOT RUN
+**Classification:** blocking
+
+**Authority:**
+
+- ADR 0008 timeout/cancellation/uncertainty contract
+- accepted M3-R3-4 no-replay contract
+- M3-F06
+
+**Required behavior:**
+Shutdown abort reaches the underlying tool implementation. Runtime drain does not complete until that implementation settles or is proved stopped. A post-side-effect cancellation remains outcome-uncertain and is never replayed.
+
+**Required proof:**
+Barrier-controlled ToolRuntime implementation proving:
+
+- implementation entered;
+- implementation-I/O marker recorded;
+- side-effect-possible marker recorded where applicable;
+- parent abort observed by child signal;
+- physical implementation later settles;
+- execute count = 1;
+- outcome remains TOOL_OUTCOME_UNCERTAIN after the side-effect boundary;
+- late success cannot create tool.completed;
+- storage close occurs only after physical drain.
+
+##### M3-R3-5-G6 — Finalization and close-last production wiring
+
+**Status:** PLANNED — NOT RUN
+**Classification:** blocking
+
+**Authority:**
+
+- Architecture expected shutdown order
+- ADR 0006 exactly-once FinalizeStage and guaranteed release
+- ADR 0009 SQLite close-last ordering
+- M3-F06
+
+**Required behavior:**
+Every accepted nonterminal run completes exactly one terminal/finalization path. Runtime lanes, capacity, approval waits and handles are released. Already-terminal runs remain unchanged. Production createApp.stop closes SQLite last.
+
+**Required proof:**
+Production-composition ordered shutdown trace:
+
+admission fence
+→ Gateway quiesce
+→ cancellation
+→ provider/tool drain
+→ checkpoint/finalization
+→ required durable writes
+→ lane/capacity/approval/handle cleanup
+→ database close
+
+Assert:
+
+- database close is last;
+- no post-close store access;
+- no duplicate terminal/finalization event;
+- runtime is idle after stop resolves.
+
+##### M3-R3-5-G7 — Drain failure is fail-closed
+
+**Status:** PLANNED — NOT RUN
+**Classification:** blocking
+
+**Authority:**
+
+- Architecture lifecycle invariant
+- ADR 0009 storage close ordering
+- M3-F06
+
+**Required behavior:**
+A drain timeout or drain failure rejects shutdown and leaves SQLite open. Shutdown is not reported as successful.
+
+**Required proof:**
+Injected drain timeout/failure tests assert:
+
+- app.stop rejects;
+- database.close was not called;
+- successful-stop evidence was not emitted;
+- unfinished-work category is reported;
+- no duplicate run/tool terminal transition occurs.
+
+#### 8. Likely implementation scope locator
+
+Likely production scope:
+
+```text
+- src/bootstrap/create-app.ts
+- src/agents/agent-runtime.ts
+- src/agents/session-run-lane.ts
+- src/agents/runtime-capacity.ts
+- src/tools/tool-runtime.ts
+```
+
+Conditional only when source-backed:
+
+```text
+- src/policy/approval-coordinator.ts
+- src/core/errors.ts
+- src/gateway/create-gateway.ts
+- src/index.ts
+- provider contracts or Gemini adapter
+```
+
+Likely test scope:
+
+```text
+- focused bootstrap shutdown tests
+- AgentRuntime admission/scheduling/cancellation tests
+- provider drain tests
+- ToolRuntime physical-drain tests
+- approval-wait shutdown tests
+```
+
+Implementation is not required to create particular classes or filenames beyond observable boundary ownership.
+
+#### 9. Non-goals
+
+Non-goals for M3-R3-5:
+
+```text
+M3-R3-6 full terminal cleanup matrix
+Architecture or ADR changes
+docs/IMPLEMENTATION_PLAN.md changes
+Gateway protocol or public API changes
+database schema changes
+migrations
+shutdown-state persistence
+provider retry/failover redesign
+automatic replay
+rollback or compensation
+persistent or restart-resumable approvals
+browser, shell, memory or plugin lifecycle
+live Gemini verification
+general lifecycle framework
+ShutdownCoordinator abstraction requirement
+unrelated P2 work
+milestone closure or synchronization to PASS
+```
+
+#### 10. Migration decision
+
+```text
+Migration decision: NO MIGRATION
+```
+
+If implementation later requires a schema or persistent shutdown-state change, execution must stop for a separate decision.
+
+#### 11. Required implementation evidence
+
+Expected validation categories:
+
+```text
+focused bootstrap shutdown tests
+focused AgentRuntime queued/capacity/provider cancellation tests
+focused ToolRuntime physical-drain tests
+approval-wait integration tests
+event-driven barriers or fake clocks rather than arbitrary timing sleeps
+pnpm typecheck
+pnpm lint
+pnpm build
+pnpm test
+git diff --check
+```
+
+Equivalent structural or parameterized proof is acceptable when it establishes the same invariant. A separate test for every syntactically different equivalent case is not required.
+
+#### Status
+
+M3-R3-5 planning contract locked.
+Implementation not started.
+Status: PLANNED — NOT RUN.
+Next checkpoint: M3-R3-5 implementation.
 
 ### M3-R4 — Lifecycle journal, Gemini continuation, and controlled verification
 
